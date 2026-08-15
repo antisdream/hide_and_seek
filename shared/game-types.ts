@@ -3,6 +3,7 @@ export type GamePhase = "LOBBY" | "COUNTDOWN" | "HIDING" | "SEEKING" | "RESULT" 
 export type PlayerRole = "HIDER" | "SEEKER" | "SPECTATOR";
 export type PropKind = "pencil" | "notebook" | "tape" | "eraser" | "box" | "ribbon";
 export type PingKind = "check" | "suspect" | "done" | "danger" | "moving";
+export type MapTheme = "stationery" | "warehouse" | "workshop";
 
 export interface Point {
   x: number;
@@ -29,12 +30,24 @@ export interface StaticProp extends Point {
   rotation: number;
 }
 
+export interface Portal extends Point {
+  id: string;
+  label: string;
+  targetId: string;
+  radius: number;
+  exit: Point;
+}
+
 export interface MapLayout {
+  id: string;
+  name: string;
+  theme: MapTheme;
   version: string;
   width: number;
   height: number;
   obstacles: Rect[];
   zones: Zone[];
+  portals: Portal[];
 }
 
 export interface GameRules {
@@ -128,7 +141,7 @@ export interface GameSnapshot {
   minPlayers: number;
   maxPlayers: number;
   canStart: boolean;
-  worldHidden: boolean;
+  seekerPreview: boolean;
   self: SelfView;
   players: PublicPlayer[];
   entities: WorldEntity[];
@@ -151,7 +164,7 @@ export interface TagMessage {
 
 export interface GameEffect {
   id: string;
-  type: "correct-tag" | "wrong-tag" | "swap" | "focus-empty" | "mission" | "phase";
+  type: "correct-tag" | "wrong-tag" | "swap" | "focus-empty" | "mission" | "phase" | "portal";
   x?: number;
   y?: number;
   label: string;

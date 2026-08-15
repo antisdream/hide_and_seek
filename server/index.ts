@@ -3,7 +3,7 @@ import { Server } from "@colyseus/core";
 import { WebSocketTransport } from "@colyseus/ws-transport";
 import { DEFAULT_RULES, FAST_TEST_RULES } from "../shared/game-rules";
 import type { GameRules } from "../shared/game-types";
-import { NunchisoomRoom, configureNunchisoomRoom } from "./NunchisoomRoom";
+import { createConfiguredNunchisoomRoom } from "./NunchisoomRoom";
 import { SqliteMatchStore, type MatchStore } from "./persistence";
 
 // 로컬 개발에서는 서버도 웹과 같은 `.env.local` 설정을 읽는다.
@@ -40,7 +40,7 @@ export function createNunchisoomServer(options: NunchisoomServerOptions = {}): N
   const store = new SqliteMatchStore(options.databasePath);
   const transport = new WebSocketTransport({ maxPayload: 8 * 1024 });
 
-  configureNunchisoomRoom({
+  const ConfiguredNunchisoomRoom = createConfiguredNunchisoomRoom({
     allowedOrigins,
     rules: options.rules ?? DEFAULT_RULES,
     store,
@@ -83,7 +83,7 @@ export function createNunchisoomServer(options: NunchisoomServerOptions = {}): N
       });
     },
   });
-  gameServer.define("nunchisoom", NunchisoomRoom);
+  gameServer.define("nunchisoom", ConfiguredNunchisoomRoom);
 
   return {
     gameServer,

@@ -297,14 +297,19 @@ button { color: inherit; }
 .game-column { min-width: 0; padding: 20px; display: flex; flex-direction: column; background: #171a2f; }
 .canvas-frame { width: 100%; aspect-ratio: 3 / 2; max-height: calc(100vh - 143px); position: relative; overflow: hidden; border: 2px solid #444a64; border-radius: 18px; background: #28304a; box-shadow: 0 13px 30px rgba(0,0,0,.2); }
 .phaser-host, .phaser-host canvas { width: 100% !important; height: 100% !important; display: block; }
+.map-ribbon { position: absolute; left: 13px; top: 13px; z-index: 7; display: flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid #69738f; border-radius: 10px; background: rgba(23,26,47,.84); box-shadow: 0 4px 12px rgba(0,0,0,.18); }
+.map-ribbon span { color: var(--yellow); font-size: 10px; font-weight: 900; }
+.map-ribbon strong { color: white; font-size: 11px; }
+.preview-ribbon { position: absolute; left: 50%; top: 13px; z-index: 8; max-width: calc(100% - 210px); padding: 8px 12px; display: flex; align-items: center; gap: 9px; border: 1px solid var(--mint); border-radius: 12px; background: rgba(30,62,61,.93); box-shadow: 0 5px 15px rgba(0,0,0,.2); transform: translateX(-50%); }
+.preview-ribbon > span { width: 27px; height: 27px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 9px; background: var(--mint); color: var(--ink); font-weight: 900; }
+.preview-ribbon strong, .preview-ribbon small { display: block; }
+.preview-ribbon strong { color: #edfff9; font-size: 11px; }
+.preview-ribbon small { margin-top: 2px; color: #bfe5dc; font-size: 8px; line-height: 1.35; }
 .game-overlay { position: absolute; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: rgba(23,26,47,.84); backdrop-filter: blur(4px); text-align: center; }
 .game-overlay strong { max-width: 680px; padding: 0 28px; color: white; font-size: clamp(23px, 3vw, 38px); }
 .game-overlay span { color: var(--mint); font-size: 13px; font-weight: 900; }
 .compact-overlay { inset: 29% 36%; border: 2px solid var(--yellow); border-radius: 24px; background: rgba(37,33,58,.92); }
 .compact-overlay strong { padding: 0; color: var(--yellow); font-size: 45px; }
-.curtain-overlay { background: radial-gradient(circle at 50% 45%, rgba(105,140,255,.18), transparent 18rem), #171a2ff2; }
-.curtain-overlay > span { width: 65px; height: 65px; display: grid; place-items: center; border: 2px solid var(--yellow); border-radius: 22px; background: #252943; color: var(--yellow); font-size: 33px; }
-.curtain-overlay p { max-width: 420px; margin: 0; padding: 0 22px; color: #aeb7cf; font-size: 12px; line-height: 1.6; }
 .result-overlay ol { max-width: 620px; margin: 12px 25px 0; padding: 18px 22px 18px 42px; border-radius: 15px; background: rgba(255,255,255,.08); color: #dce1ee; font-size: 12px; line-height: 1.8; text-align: left; }
 .caught-ribbon { position: absolute; left: 50%; bottom: 14px; z-index: 8; padding: 9px 14px; border-radius: 999px; background: #fff0ee; color: #7d312c; font-size: 11px; font-weight: 900; transform: translateX(-50%); }
 .visual-feed { min-height: 47px; margin-top: 10px; padding: 9px 12px; display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 9px; border: 1px solid #363b54; border-radius: 12px; background: #20233b; }
@@ -333,6 +338,8 @@ button { color: inherit; }
 .action-buttons > button strong { font-size: 11px; }
 .action-buttons > button small { color: #9fa7bb; font-size: 8px; }
 .action-empty { padding: 18px 12px; border: 1px dashed #4c526b; border-radius: 13px; color: #9ea6bb; font-size: 10px; line-height: 1.5; text-align: center; }
+.preview-actions { border-color: #4f8b80; background: #243c3d; color: #bfe5dc; }
+.preview-actions strong { color: var(--mint); }
 .mission-card { padding: 11px; border: 1px solid #396356; border-radius: 13px; background: #243c3d; }
 .mission-card span, .mission-card strong { display: block; }
 .mission-card span { color: var(--mint); font-size: 8px; font-weight: 900; }
@@ -395,6 +402,8 @@ button { color: inherit; }
   .phase-summary time { min-width: 58px; font-size: 19px; }
   .canvas-frame { border-radius: 11px; }
   .compact-overlay { inset: 22% 28%; }
+  .map-ribbon { left: 8px; top: 8px; }
+  .preview-ribbon { top: auto; bottom: 8px; max-width: calc(100% - 16px); width: max-content; }
   .player-list { grid-template-columns: 1fr; }
   .action-panel { grid-template-columns: 1fr; }
   .ping-panel, .touch-pad, .keyboard-help { grid-column: auto; }

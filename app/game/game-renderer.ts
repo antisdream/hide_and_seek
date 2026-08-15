@@ -2,6 +2,7 @@ import type Phaser from "phaser";
 import type {
   GameEffect,
   GameSnapshot,
+  MapTheme,
   Point,
   PropKind,
   TeamPing,
@@ -26,11 +27,30 @@ interface RendererCallbacks {
   onTag: (entityId: string) => void;
 }
 
+interface EntityView {
+  container: Phaser.GameObjects.Container;
+  signature: string;
+  targetX: number;
+  targetY: number;
+  targetRotation: number;
+}
+
+interface MapPalette {
+  floor: number;
+  grid: number;
+  obstacle: number;
+  obstacleLine: number;
+  accent: number;
+  portal: number;
+}
+
 const TILE = 40;
+const VIEW_WIDTH = 24 * TILE;
+const VIEW_HEIGHT = 16 * TILE;
 
 /**
- * Phaser는 브라우저에서만 불러와 서버 렌더링 단계의 Canvas 접근을 막는다.
- * 모든 사물은 동일한 그리기 경로를 사용해 숨은 이용자만 식별되는 정보 누출을 피한다.
+ * 서버 좌표를 목표값으로 유지하고 Phaser 프레임 사이에서 보간한다.
+ * 맵과 사물 전체를 매 스냅숏마다 파괴하지 않아 이동이 끊겨 보이는 현상을 줄인다.
  */
 export async function mountGameRenderer(
   parent: HTMLElement,
@@ -40,11 +60,17 @@ export async function mountGameRenderer(
 
   class NightStationeryScene extends PhaserRuntime.Scene {
     private snapshot?: GameSnapshot;
-    private world?: Phaser.GameObjects.Container;
-    private sceneReady = false;
+    private staticWorld?: Phaser.GameObjects.Container;
+    private entityWorld?: Phaser.GameObjects.Container;
+    private transientWorld?: Phaser.GameObjects.Container;
+    private waitingWorld?: Phaser.GameObjects.Container;
+    private readonly entityViews = new Map<string, EntityView>();
     private readonly effects: Array<GameEffect & { expiresAt: number }> = [];
     private readonly pings: Array<TeamPing & { expiresAt: number }> = [];
     private lens?: LensPulse;
+    private sceneReady = false;
+    private mapKey = "";
+    private followedEntityId = "";
 
     constructor() {
       super("night-stationery");
@@ -53,91 +79,184 @@ export async function mountGameRenderer(
     create(): void {
       this.sceneReady = true;
       this.cameras.main.setBackgroundColor("#171a33");
-      if (this.snapshot) this.redraw();
+      if (this.snapshot) this.applySnapshot(this.snapshot);
       else this.drawWaitingBoard();
     }
 
-    update(): void {
+    update(_time: number, delta: number): void {
       const now = Date.now();
       const beforeEffects = this.effects.length;
       const beforePings = this.pings.length;
       while (this.effects[0] && this.effects[0].expiresAt <= now) this.effects.shift();
       while (this.pings[0] && this.pings[0].expiresAt <= now) this.pings.shift();
-      if (this.lens && this.lens.expiresAt <= now) this.lens = undefined;
-      if (beforeEffects !== this.effects.length || beforePings !== this.pings.length) this.redraw();
+      const lensExpired = Boolean(this.lens && this.lens.expiresAt <= now);
+      if (lensExpired) this.lens = undefined;
+      if (beforeEffects !== this.effects.length || beforePings !== this.pings.length || lensExpired) {
+        this.redrawTransients();
+      }
+
+      const blend = 1 - Math.exp(-delta / 55);
+      for (const view of this.entityViews.values()) {
+        const gap = Math.hypot(view.targetX - view.container.x, view.targetY - view.container.y);
+        if (gap > TILE * 4) {
+          // 포탈은 긴 거리를 미끄러지지 않고 즉시 도착하게 한다.
+          view.container.setPosition(view.targetX, view.targetY);
+        } else {
+          view.container.x += (view.targetX - view.container.x) * blend;
+          view.container.y += (view.targetY - view.container.y) * blend;
+        }
+        const angleGap = Math.atan2(
+          Math.sin(view.targetRotation - view.container.rotation),
+          Math.cos(view.targetRotation - view.container.rotation),
+        );
+        view.container.rotation += angleGap * blend;
+      }
     }
 
     setSnapshot(snapshot: GameSnapshot): void {
       this.snapshot = snapshot;
-      if (this.sceneReady) this.redraw();
+      if (this.sceneReady) this.applySnapshot(snapshot);
     }
 
     addEffect(effect: GameEffect): void {
       this.effects.push({ ...effect, expiresAt: Date.now() + 1_900 });
-      if (this.sceneReady) this.redraw();
+      if (this.sceneReady) this.redrawTransients();
     }
 
     addLens(pulse: LensPulse): void {
       this.lens = pulse;
-      if (this.sceneReady) this.redraw();
+      if (this.sceneReady) this.redrawTransients();
     }
 
     addPing(ping: TeamPing): void {
       this.pings.push({ ...ping, expiresAt: Date.now() + 2_400 });
-      if (this.sceneReady) this.redraw();
+      if (this.sceneReady) this.redrawTransients();
     }
 
-    private redraw(): void {
-      this.world?.destroy(true);
-      if (!this.snapshot) {
-        this.drawWaitingBoard();
-        return;
+    private applySnapshot(snapshot: GameSnapshot): void {
+      this.waitingWorld?.destroy(true);
+      this.waitingWorld = undefined;
+      // 같은 맵이어도 역할이 바뀌면 미션 구역의 노출 방식이 달라지므로 다시 구성한다.
+      const nextMapKey = `${snapshot.map.id ?? "legacy"}:${snapshot.map.version}:${snapshot.self.role}`;
+      if (this.mapKey !== nextMapKey) {
+        this.mapKey = nextMapKey;
+        this.rebuildStaticMap(snapshot);
+        this.clearEntities();
       }
+      this.reconcileEntities(snapshot.entities);
+    }
 
-      const snapshot = this.snapshot;
+    private rebuildStaticMap(snapshot: GameSnapshot): void {
+      this.staticWorld?.destroy(true);
       const root = this.add.container(0, 0);
-      this.world = root;
-      root.add(this.drawFloor(snapshot.map.width, snapshot.map.height));
+      this.staticWorld = root;
+      const palette = paletteFor(snapshot.map.theme);
+      root.add(this.drawFloor(snapshot.map.width, snapshot.map.height, palette));
 
       for (const zone of snapshot.map.zones) {
         const ring = this.add.graphics();
-        ring.lineStyle(2, 0x63d6b5, snapshot.self.role === "HIDER" ? 0.55 : 0.16);
+        ring.lineStyle(2, palette.accent, snapshot.self.role === "HIDER" ? 0.55 : 0.12);
         ring.strokeCircle(zone.x * TILE, zone.y * TILE, zone.radius * TILE);
         root.add(ring);
         if (snapshot.self.role === "HIDER") {
-          const label = this.add.text(zone.x * TILE, zone.y * TILE - zone.radius * TILE, zone.label, {
-            color: "#d7fff4",
+          root.add(this.add.text(zone.x * TILE, zone.y * TILE - zone.radius * TILE, zone.label, {
+            color: "#f2fff9",
             fontFamily: "Pretendard, sans-serif",
             fontSize: "13px",
             fontStyle: "bold",
             backgroundColor: "#263d48cc",
             padding: { x: 6, y: 3 },
-          }).setOrigin(0.5, 1);
-          root.add(label);
+          }).setOrigin(0.5, 1));
         }
       }
 
       for (const obstacle of snapshot.map.obstacles) {
-        const shelf = this.add.graphics();
-        shelf.fillStyle(0x6c4f66, 1);
-        shelf.fillRoundedRect(
+        const structure = this.add.graphics();
+        structure.fillStyle(palette.obstacle, 1);
+        structure.fillRoundedRect(
           obstacle.x * TILE,
           obstacle.y * TILE,
           obstacle.width * TILE,
           obstacle.height * TILE,
           8,
         );
-        shelf.lineStyle(3, 0x2b233e, 1);
-        shelf.strokeRoundedRect(
+        structure.lineStyle(3, palette.obstacleLine, 1);
+        structure.strokeRoundedRect(
           obstacle.x * TILE,
           obstacle.y * TILE,
           obstacle.width * TILE,
           obstacle.height * TILE,
           8,
         );
-        root.add(shelf);
+        root.add(structure);
       }
 
+      for (const portal of snapshot.map.portals ?? []) root.add(this.drawPortal(portal, palette.portal));
+
+      const worldWidth = snapshot.map.width * TILE;
+      const worldHeight = snapshot.map.height * TILE;
+      this.cameras.main.stopFollow();
+      this.cameras.main.setBounds(0, 0, worldWidth, worldHeight);
+      this.cameras.main.centerOn(worldWidth / 2, worldHeight / 2);
+      this.followedEntityId = "";
+      this.redrawTransients();
+    }
+
+    private reconcileEntities(entities: WorldEntity[]): void {
+      const visibleIds = new Set(entities.map((entity) => entity.id));
+      for (const [id, view] of this.entityViews) {
+        if (visibleIds.has(id)) continue;
+        view.container.destroy(true);
+        this.entityViews.delete(id);
+      }
+
+      if (!this.entityWorld) this.entityWorld = this.add.container(0, 0);
+      let controlledId = "";
+      for (const entity of entities) {
+        const signature = entitySignature(entity);
+        const targetX = entity.x * TILE;
+        const targetY = entity.y * TILE;
+        const targetRotation = (entity.rotation * Math.PI) / 180;
+        let view = this.entityViews.get(entity.id);
+        if (!view || view.signature !== signature) {
+          const previousPosition = view ? { x: view.container.x, y: view.container.y } : undefined;
+          const previousRotation = view?.container.rotation;
+          view?.container.destroy(true);
+          const container = this.drawEntity(entity);
+          container.setPosition(previousPosition?.x ?? targetX, previousPosition?.y ?? targetY);
+          container.setRotation(previousRotation ?? targetRotation);
+          this.entityWorld.add(container);
+          view = { container, signature, targetX, targetY, targetRotation };
+          this.entityViews.set(entity.id, view);
+        } else {
+          view.targetX = targetX;
+          view.targetY = targetY;
+          view.targetRotation = targetRotation;
+        }
+        if (entity.controlled) controlledId = entity.id;
+      }
+
+      if (controlledId && controlledId !== this.followedEntityId) {
+        const controlled = this.entityViews.get(controlledId)?.container;
+        if (controlled) {
+          this.cameras.main.startFollow(controlled, true, 0.14, 0.14);
+          this.followedEntityId = controlledId;
+        }
+      }
+    }
+
+    private clearEntities(): void {
+      this.entityWorld?.destroy(true);
+      this.entityWorld = this.add.container(0, 0);
+      this.entityViews.clear();
+      this.followedEntityId = "";
+    }
+
+    private redrawTransients(): void {
+      if (!this.sceneReady) return;
+      this.transientWorld?.destroy(true);
+      const root = this.add.container(0, 0);
+      this.transientWorld = root;
       if (this.lens) {
         for (const cell of this.lens.cells) {
           const pulse = this.add.graphics();
@@ -148,36 +267,33 @@ export async function mountGameRenderer(
           root.add(pulse);
         }
       }
-
-      for (const entity of snapshot.entities) root.add(this.drawEntity(entity));
       for (const ping of this.pings) root.add(this.drawPing(ping));
       for (const effect of this.effects) root.add(this.drawEffect(effect));
     }
 
     private drawWaitingBoard(): void {
-      this.world?.destroy(true);
+      this.waitingWorld?.destroy(true);
       const root = this.add.container(0, 0);
-      this.world = root;
-      root.add(this.drawFloor(24, 16));
-      const title = this.add.text(480, 292, "수상한 잡화점을 정리하는 중…", {
+      this.waitingWorld = root;
+      root.add(this.drawFloor(24, 16, paletteFor("stationery")));
+      root.add(this.add.text(480, 292, "수상한 잡화점을 정리하는 중…", {
         color: "#fff9ec",
         fontFamily: "Pretendard, sans-serif",
         fontSize: "26px",
         fontStyle: "bold",
-      }).setOrigin(0.5);
-      const note = this.add.text(480, 332, "소리 없이도 모든 단서를 확인할 수 있어요", {
+      }).setOrigin(0.5));
+      root.add(this.add.text(480, 332, "소리 없이도 모든 단서를 확인할 수 있어요", {
         color: "#aeb7cf",
         fontFamily: "Pretendard, sans-serif",
         fontSize: "15px",
-      }).setOrigin(0.5);
-      root.add([title, note]);
+      }).setOrigin(0.5));
     }
 
-    private drawFloor(width: number, height: number): Phaser.GameObjects.Graphics {
+    private drawFloor(width: number, height: number, palette: MapPalette): Phaser.GameObjects.Graphics {
       const floor = this.add.graphics();
-      floor.fillStyle(0x28304a, 1);
+      floor.fillStyle(palette.floor, 1);
       floor.fillRect(0, 0, width * TILE, height * TILE);
-      floor.lineStyle(1, 0x39435d, 0.65);
+      floor.lineStyle(1, palette.grid, 0.65);
       for (let x = 0; x <= width; x += 1) floor.lineBetween(x * TILE, 0, x * TILE, height * TILE);
       for (let y = 0; y <= height; y += 1) floor.lineBetween(0, y * TILE, width * TILE, y * TILE);
       floor.lineStyle(5, 0x15182c, 1);
@@ -185,14 +301,34 @@ export async function mountGameRenderer(
       return floor;
     }
 
+    private drawPortal(
+      portal: GameSnapshot["map"]["portals"][number],
+      color: number,
+    ): Phaser.GameObjects.Container {
+      const container = this.add.container(portal.x * TILE, portal.y * TILE);
+      const gate = this.add.graphics();
+      gate.fillStyle(color, 0.18);
+      gate.fillCircle(0, 0, portal.radius * TILE);
+      gate.lineStyle(5, color, 0.9);
+      gate.strokeCircle(0, 0, portal.radius * TILE);
+      gate.lineStyle(2, 0xffffff, 0.7);
+      gate.strokeCircle(0, 0, portal.radius * TILE - 9);
+      const label = this.add.text(0, -portal.radius * TILE - 10, portal.label, {
+        color: "#ffffff",
+        backgroundColor: "#25213add",
+        fontFamily: "Pretendard, sans-serif",
+        fontSize: "12px",
+        fontStyle: "bold",
+        padding: { x: 7, y: 4 },
+      }).setOrigin(0.5, 1);
+      container.add([gate, label]);
+      return container;
+    }
+
     private drawEntity(entity: WorldEntity): Phaser.GameObjects.Container {
       const container = this.add.container(entity.x * TILE, entity.y * TILE);
-      if (entity.category === "seeker") {
-        this.drawSeeker(container, entity);
-      } else {
-        this.drawProp(container, entity.propKind ?? "notebook", entity);
-      }
-      container.setRotation((entity.rotation * Math.PI) / 180);
+      if (entity.category === "seeker") this.drawSeeker(container, entity);
+      else this.drawProp(container, entity.propKind ?? "notebook", entity);
       container.setSize(42, 42).setInteractive({ useHandCursor: true });
       container.on("pointerdown", () => callbacks.onTag(entity.id));
       return container;
@@ -203,10 +339,13 @@ export async function mountGameRenderer(
       kind: PropKind,
       entity: WorldEntity,
     ): void {
-      const color = propColor(kind);
       const body = this.add.graphics();
-      body.fillStyle(color, 1);
-      body.lineStyle(entity.controlled ? 4 : entity.teammate ? 3 : 2, entity.controlled ? 0xffd76a : entity.teammate ? 0x63d6b5 : 0x171a33, 1);
+      body.fillStyle(propColor(kind), 1);
+      body.lineStyle(
+        entity.controlled ? 4 : entity.teammate ? 3 : 2,
+        entity.controlled ? 0xffd76a : entity.teammate ? 0x63d6b5 : 0x171a33,
+        1,
+      );
 
       if (kind === "pencil") {
         body.fillRoundedRect(-22, -7, 44, 14, 6);
@@ -240,7 +379,6 @@ export async function mountGameRenderer(
       }
       container.add(body);
 
-      // 모든 사물에 같은 표정을 그려 캐릭터성은 살리고 정답 표시는 막는다.
       const face = this.add.graphics();
       face.fillStyle(0x24213a, 1);
       face.fillCircle(-5, -1, 2);
@@ -250,15 +388,14 @@ export async function mountGameRenderer(
       container.add(face);
 
       if (entity.controlled || entity.teammate) {
-        const marker = this.add.text(0, -34, entity.controlled ? "나" : "짝", {
+        container.add(this.add.text(0, -34, entity.controlled ? "나" : "짝", {
           color: "#25213a",
           backgroundColor: entity.controlled ? "#ffd76a" : "#63d6b5",
           fontFamily: "Pretendard, sans-serif",
           fontSize: "11px",
           fontStyle: "bold",
           padding: { x: 5, y: 3 },
-        }).setOrigin(0.5);
-        container.add(marker);
+        }).setOrigin(0.5));
       }
     }
 
@@ -287,19 +424,22 @@ export async function mountGameRenderer(
         fontStyle: "bold",
         padding: { x: 5, y: 3 },
       }).setOrigin(0.5, 0);
-      badge.setRotation((-entity.rotation * Math.PI) / 180);
+      badge.setRotation(-container.rotation);
       container.add(badge);
     }
 
     private drawEffect(effect: GameEffect): Phaser.GameObjects.Container {
-      const x = (effect.x ?? 12) * TILE;
-      const y = (effect.y ?? 1.3) * TILE;
-      const container = this.add.container(x, y);
+      const fallback = this.snapshot
+        ? { x: this.snapshot.map.width / 2, y: this.snapshot.map.height / 2 }
+        : { x: 12, y: 8 };
+      const container = this.add.container((effect.x ?? fallback.x) * TILE, (effect.y ?? fallback.y) * TILE);
       const ring = this.add.graphics();
-      const color = effect.type === "correct-tag" || effect.type === "mission" ? 0x63d6b5 : 0xff6f61;
+      const color = effect.type === "correct-tag" || effect.type === "mission" || effect.type === "portal"
+        ? 0x63d6b5
+        : 0xff6f61;
       ring.lineStyle(4, color, 0.9);
-      ring.strokeCircle(0, 0, 31);
-      const label = this.add.text(0, -42, effect.label, {
+      ring.strokeCircle(0, 0, effect.type === "portal" ? 42 : 31);
+      const label = this.add.text(0, -48, effect.label, {
         color: "#ffffff",
         backgroundColor: "#25213add",
         fontFamily: "Pretendard, sans-serif",
@@ -334,15 +474,15 @@ export async function mountGameRenderer(
   const game = new PhaserRuntime.Game({
     type: PhaserRuntime.AUTO,
     parent,
-    width: 24 * TILE,
-    height: 16 * TILE,
+    width: VIEW_WIDTH,
+    height: VIEW_HEIGHT,
     backgroundColor: "#171a33",
     render: { antialias: true, pixelArt: false, roundPixels: true },
     scale: {
       mode: PhaserRuntime.Scale.FIT,
       autoCenter: PhaserRuntime.Scale.CENTER_BOTH,
-      width: 24 * TILE,
-      height: 16 * TILE,
+      width: VIEW_WIDTH,
+      height: VIEW_HEIGHT,
     },
     scene,
     audio: { noAudio: true },
@@ -355,6 +495,46 @@ export async function mountGameRenderer(
     pushPing: (ping) => scene.addPing(ping),
     destroy: () => game.destroy(true),
   };
+}
+
+function entitySignature(entity: WorldEntity): string {
+  return [
+    entity.category,
+    entity.propKind ?? "",
+    entity.controlled,
+    entity.teammate,
+    entity.displayName ?? "",
+  ].join(":");
+}
+
+function paletteFor(theme: MapTheme | undefined): MapPalette {
+  const palettes: Record<MapTheme, MapPalette> = {
+    stationery: {
+      floor: 0x28304a,
+      grid: 0x39435d,
+      obstacle: 0x6c4f66,
+      obstacleLine: 0x2b233e,
+      accent: 0x63d6b5,
+      portal: 0x9cb0ff,
+    },
+    warehouse: {
+      floor: 0x24383b,
+      grid: 0x385356,
+      obstacle: 0x84684c,
+      obstacleLine: 0x30281f,
+      accent: 0x8ee3cf,
+      portal: 0xffc96b,
+    },
+    workshop: {
+      floor: 0x382b46,
+      grid: 0x543d62,
+      obstacle: 0x7b5578,
+      obstacleLine: 0x2c2036,
+      accent: 0xff9c91,
+      portal: 0xcaa8ff,
+    },
+  };
+  return palettes[theme ?? "stationery"] ?? palettes.stationery;
 }
 
 function propColor(kind: PropKind): number {

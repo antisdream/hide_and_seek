@@ -3,13 +3,14 @@ import test from "node:test";
 import { ColyseusSDK, type Room } from "@colyseus/sdk";
 import { FAST_TEST_RULES } from "../../shared/game-rules";
 import type { GameSnapshot } from "../../shared/game-types";
+import { MAP_CATALOG } from "../../shared/map-generator";
 import { createNunchisoomServer } from "../../server/index";
 
-test("4개 실제 소켓이 한 방에서 역할 비공개와 전체 라운드 전이를 지킨다", { timeout: 15_000 }, async () => {
+test("4개 실제 소켓이 기준 맵 비공개·포탈 이동과 전체 라운드 전이를 지킨다", { timeout: 15_000 }, async () => {
   const runtime = createNunchisoomServer({
     allowedOrigins: [],
     databasePath: ":memory:",
-    rules: FAST_TEST_RULES,
+    rules: { ...FAST_TEST_RULES, hidingMs: 5_000 },
     greet: false,
   });
   const rooms: Room[] = [];
@@ -36,20 +37,67 @@ test("4개 실제 소켓이 한 방에서 역할 비공개와 전체 라운드 �
     assert.ok(seekerSnapshot);
     assert.ok(hiderSnapshot);
     assert.equal(seekerSnapshot.players.some((player) => player.revealedRole), false);
-    assert.equal(seekerSnapshot.worldHidden, true);
-    assert.equal(seekerSnapshot.entities.length, 0);
+    assert.equal(seekerSnapshot.seekerPreview, true);
+    assert.equal(seekerSnapshot.map.id, MAP_CATALOG[0].id);
+    assert.ok(seekerSnapshot.map.portals.length >= 4);
+    assert.ok(seekerSnapshot.entities.some((entity) => entity.category === "prop"));
+    assert.equal(
+      seekerSnapshot.entities
+        .filter((entity) => entity.category === "prop")
+        .every((entity) => !entity.controlled && !entity.teammate && !entity.moving),
+      true,
+    );
+    assert.ok(seekerSnapshot.entities.some((entity) => entity.category === "seeker" && entity.controlled));
     assert.equal(hiderSnapshot.entities.filter((entity) => entity.controlled).length, 1);
+    assert.ok(
+      hiderSnapshot.entities.filter((entity) => entity.category === "prop").length >
+      seekerSnapshot.entities.filter((entity) => entity.category === "prop").length,
+    );
 
     const seekerRoomIndex = snapshots.findIndex((state) => state.self.role === "SEEKER");
-    const seekingSnapshot = await waitForSnapshot(rooms[seekerRoomIndex], (state) => state.phase === "SEEKING");
-    assert.equal(seekingSnapshot.worldHidden, false);
+    const previewSeeker = seekerSnapshot.entities.find((entity) => entity.category === "seeker" && entity.controlled);
+    assert.ok(previewSeeker);
+    let latestPreviewSeeker = previewSeeker;
+    const previewTrace: string[] = [];
+    const removePreviewTracker = rooms[seekerRoomIndex].onMessage<GameSnapshot>("state", (state) => {
+      const entity = state.entities.find((candidate) => candidate.category === "seeker" && candidate.controlled);
+      if (entity) {
+        latestPreviewSeeker = entity;
+        previewTrace.push(`${state.phase}@${state.serverTime}:${entity.x.toFixed(2)},${entity.y.toFixed(2)}`);
+        if (previewTrace.length > 12) previewTrace.shift();
+      }
+    });
+    rooms[seekerRoomIndex].send("move", { seq: 1, x: 1, y: 0 });
+    let movedThroughPortal: GameSnapshot;
+    try {
+      movedThroughPortal = await waitForSnapshot(
+        rooms[seekerRoomIndex],
+        (state) => state.phase === "HIDING" && Boolean(state.entities.find(
+          (entity) => entity.category === "seeker" && entity.controlled && entity.x > 20 && entity.y < 5,
+        )),
+        4_500,
+      );
+    } catch (error) {
+      throw new Error(`포탈 진입 실패: 마지막 관찰자 좌표 (${latestPreviewSeeker.x.toFixed(2)}, ${latestPreviewSeeker.y.toFixed(2)}), 최근 상태 ${previewTrace.join(" | ")}`, { cause: error });
+    } finally {
+      removePreviewTracker();
+    }
+    rooms[seekerRoomIndex].send("move", { seq: 2, x: 0, y: 0 });
+    assert.equal(movedThroughPortal.seekerPreview, true);
+
+    const seekingSnapshot = await waitForSnapshot(
+      rooms[seekerRoomIndex],
+      (state) => state.phase === "SEEKING",
+      7_000,
+    );
+    assert.equal(seekingSnapshot.seekerPreview, false);
     assert.equal(seekingSnapshot.entities.every((entity) => entity.id.startsWith("object-") || entity.category === "seeker"), true);
     assert.equal(seekingSnapshot.entities.filter((entity) => entity.category === "prop").every((entity) => !entity.controlled && !entity.teammate), true);
     assert.equal(seekingSnapshot.players.every((player) => player.score === 0), true);
 
     const controlledSeeker = seekingSnapshot.entities.find((entity) => entity.category === "seeker" && entity.controlled);
     assert.ok(controlledSeeker);
-    rooms[seekerRoomIndex].send("move", { seq: 1, x: 1, y: 0 });
+    rooms[seekerRoomIndex].send("move", { seq: 3, x: 1, y: 0 });
     const movedSnapshot = await waitForSnapshot(
       rooms[seekerRoomIndex],
       (state) => state.phase === "SEEKING" && Boolean(state.entities.find(
@@ -57,7 +105,7 @@ test("4개 실제 소켓이 한 방에서 역할 비공개와 전체 라운드 �
       )),
       1_000,
     );
-    rooms[seekerRoomIndex].send("move", { seq: 2, x: 0, y: 0 });
+    rooms[seekerRoomIndex].send("move", { seq: 4, x: 0, y: 0 });
     assert.ok(movedSnapshot.version > seekingSnapshot.version);
 
     const final = await waitForSnapshot(rooms[0], (state) => state.phase === "FINAL", 6_000);
@@ -65,6 +113,52 @@ test("4개 실제 소켓이 한 방에서 역할 비공개와 전체 라운드 �
     assert.equal(final.result?.winner, "HIDERS");
     assert.equal(final.players.every((player) => Boolean(player.revealedRole)), true);
     assert.equal(runtime.store.count(), 1);
+  } finally {
+    await Promise.allSettled(rooms.map((room) => room.leave(true)));
+    await runtime.shutdown();
+  }
+});
+
+test("세 라운드는 밤의 문구점, 달빛 물류창고, 별빛 포장공방 순서로 전환된다", { timeout: 15_000 }, async () => {
+  const runtime = createNunchisoomServer({
+    allowedOrigins: [],
+    databasePath: ":memory:",
+    rules: {
+      ...FAST_TEST_RULES,
+      totalRounds: 3,
+      countdownMs: 80,
+      hidingMs: 180,
+      seekingMs: 220,
+      resultMs: 80,
+    },
+    greet: false,
+  });
+  const rooms: Room[] = [];
+  try {
+    const port = await runtime.listen(0);
+    const clients = Array.from({ length: 4 }, () => new ColyseusSDK(`http://127.0.0.1:${port}`));
+    for (let index = 0; index < clients.length; index += 1) {
+      const joinedRoom = await clients[index].joinOrCreate("nunchisoom", {
+        mode: "public",
+        displayName: `맵검증자${index + 1}`,
+        deviceId: `map-rotation-device-${index + 1}`,
+      });
+      registerExpectedMessages(joinedRoom);
+      rooms.push(joinedRoom);
+    }
+
+    const firstRound = waitForSnapshot(rooms[0], (state) => state.phase === "HIDING" && state.round === 1);
+    for (const room of rooms) room.send("ready", true);
+    const first = await firstRound;
+    const second = await waitForSnapshot(rooms[0], (state) => state.phase === "HIDING" && state.round === 2, 5_000);
+    const third = await waitForSnapshot(rooms[0], (state) => state.phase === "HIDING" && state.round === 3, 5_000);
+    const final = await waitForSnapshot(rooms[0], (state) => state.phase === "FINAL", 5_000);
+
+    assert.deepEqual(
+      [first.map.id, second.map.id, third.map.id],
+      MAP_CATALOG.map((map) => map.id),
+    );
+    assert.equal(final.round, 3);
   } finally {
     await Promise.allSettled(rooms.map((room) => room.leave(true)));
     await runtime.shutdown();

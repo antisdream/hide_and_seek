@@ -8,7 +8,12 @@ import {
   selectSeekers,
   tagCooldown,
 } from "../shared/game-rules";
-import { createNightStationeryMap, pickPropKind, type GeneratedMap } from "../shared/map-generator";
+import {
+  createMapForRound,
+  findPortalTransfer,
+  pickPropKind,
+  type GeneratedMap,
+} from "../shared/map-generator";
 import type {
   GameEffect,
   GamePhase,
@@ -84,6 +89,7 @@ interface InternalPlayer extends Point {
   lensReadyAt: number;
   lastPingAt: number;
   lastMovedAt: number;
+  portalReadyAt: number;
   lastSeq: number;
   inputX: number;
   inputY: number;
@@ -96,23 +102,23 @@ interface RecentMove extends Point {
   at: number;
 }
 
-interface RuntimeConfig {
+export interface RuntimeConfig {
   rules: GameRules;
   store?: MatchStore;
   allowedOrigins: string[];
 }
 
-let runtimeConfig: RuntimeConfig = {
+const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   rules: DEFAULT_RULES,
   allowedOrigins: ["http://localhost:3000", "http://127.0.0.1:3000"],
 };
 
-export function configureNunchisoomRoom(config: Partial<RuntimeConfig>): void {
-  runtimeConfig = {
-    ...runtimeConfig,
-    ...config,
-    rules: config.rules ?? runtimeConfig.rules,
-    allowedOrigins: config.allowedOrigins ?? runtimeConfig.allowedOrigins,
+/** 서버 인스턴스마다 규칙과 저장소를 격리한 방 클래스를 만든다. */
+export function createConfiguredNunchisoomRoom(config: RuntimeConfig): typeof NunchisoomRoom {
+  return class ConfiguredNunchisoomRoom extends NunchisoomRoom {
+    protected override getRuntimeConfig(): RuntimeConfig {
+      return config;
+    }
   };
 }
 
@@ -122,6 +128,7 @@ export class NunchisoomRoom extends Room {
   private readonly seekerHistory = new Map<string, number>();
   private readonly replay: ReplayBeat[] = [];
   private readonly recentMoves: RecentMove[] = [];
+  private runtimeConfig: RuntimeConfig = DEFAULT_RUNTIME_CONFIG;
   private mode: RoomMode = "public";
   private phase: GamePhase = "LOBBY";
   private phaseEndsAt = 0;
@@ -129,15 +136,21 @@ export class NunchisoomRoom extends Room {
   private version = 0;
   private hostPlayerId = "";
   private rules: GameRules = DEFAULT_RULES;
-  private generatedMap: GeneratedMap = createNightStationeryMap(1);
+  private generatedMap: GeneratedMap = createMapForRound(1, 1);
   private staticProps: StaticProp[] = [];
+  private baselineProps: StaticProp[] = [];
   private result?: RoundResult;
   private matchId = randomUUID();
   private matchStartedAt = 0;
 
+  protected getRuntimeConfig(): RuntimeConfig {
+    return DEFAULT_RUNTIME_CONFIG;
+  }
+
   async onCreate(options: { mode?: RoomMode }): Promise<void> {
+    this.runtimeConfig = this.getRuntimeConfig();
     this.mode = options.mode === "invite" || options.mode === "practice" ? options.mode : "public";
-    this.rules = runtimeConfig.rules;
+    this.rules = this.runtimeConfig.rules;
     this.maxClients = this.mode === "practice" ? 1 : this.rules.maxPlayers;
     this.maxMessagesPerSecond = 45;
     this.patchRate = null;
@@ -161,7 +174,7 @@ export class NunchisoomRoom extends Room {
     if (!parsed.success) return false;
 
     const origin = context.headers.get("origin");
-    if (origin && runtimeConfig.allowedOrigins.length > 0 && !runtimeConfig.allowedOrigins.includes(origin)) {
+    if (origin && this.runtimeConfig.allowedOrigins.length > 0 && !this.runtimeConfig.allowedOrigins.includes(origin)) {
       return false;
     }
 
@@ -201,6 +214,7 @@ export class NunchisoomRoom extends Room {
       lensReadyAt: 0,
       lastPingAt: 0,
       lastMovedAt: 0,
+      portalReadyAt: 0,
       lastSeq: -1,
       inputX: 0,
       inputY: 0,
@@ -279,7 +293,7 @@ export class NunchisoomRoom extends Room {
     }
     if (this.phase === "HIDING") {
       this.setPhase("SEEKING", now + this.rules.seekingMs);
-      this.broadcastEffect({ type: "phase", label: "관찰자가 문구점에 들어왔습니다." });
+      this.broadcastEffect({ type: "phase", label: `${this.generatedMap.layout.name} 수색이 시작됐습니다.` });
       return;
     }
     if (this.phase === "SEEKING") {
@@ -338,8 +352,9 @@ export class NunchisoomRoom extends Room {
     this.round += 1;
     if (!this.matchStartedAt) this.matchStartedAt = now;
     const seed = randomBytes(4).readUInt32BE(0);
-    this.generatedMap = createNightStationeryMap(seed);
+    this.generatedMap = createMapForRound(seed, this.round);
     this.staticProps = this.generatedMap.staticProps.map((prop) => ({ ...prop, id: opaqueId("object") }));
+    this.baselineProps = this.staticProps.map((prop) => ({ ...prop }));
     this.result = undefined;
 
     const players = [...this.players.values()];
@@ -366,6 +381,7 @@ export class NunchisoomRoom extends Room {
       player.inputX = 0;
       player.inputY = 0;
       player.lastMovedAt = 0;
+      player.portalReadyAt = 0;
       player.propKind = pickPropKind(seed, index);
 
       if (player.role === "SEEKER") {
@@ -387,7 +403,10 @@ export class NunchisoomRoom extends Room {
     }
 
     this.setPhase("HIDING", now + this.rules.hidingMs);
-    this.broadcastEffect({ type: "phase", label: `${this.round}라운드 숨기 시작` });
+    this.broadcastEffect({
+      type: "phase",
+      label: `${this.round}라운드 · ${this.generatedMap.layout.name} 숨기 시작`,
+    });
   }
 
   private finishRound(reason: RoundResult["reason"], now: number): void {
@@ -417,7 +436,7 @@ export class NunchisoomRoom extends Room {
   private finishMatch(now: number): void {
     this.setPhase("FINAL", 0);
     for (const player of this.humanPlayers()) player.ready = false;
-    runtimeConfig.store?.save({
+    this.runtimeConfig.store?.save({
       id: this.matchId,
       roomId: this.roomId,
       mode: this.mode,
@@ -446,7 +465,7 @@ export class NunchisoomRoom extends Room {
   private movePlayer(player: InternalPlayer, deltaTime: number, now: number): void {
     const canMove =
       (player.role === "HIDER" && (this.phase === "HIDING" || this.phase === "SEEKING")) ||
-      (player.role === "SEEKER" && this.phase === "SEEKING");
+      (player.role === "SEEKER" && (this.phase === "HIDING" || this.phase === "SEEKING"));
     if (!canMove || player.locked) return;
 
     const direction = normalizeMove(player.inputX, player.inputY);
@@ -462,8 +481,30 @@ export class NunchisoomRoom extends Room {
 
     player.rotation = Math.round((Math.atan2(direction.y, direction.x) * 180) / Math.PI);
     player.lastMovedAt = now;
+    this.applyPortal(player, now);
     if (player.role === "HIDER") {
       this.recentMoves.push({ playerId: player.id, x: player.x, y: player.y, at: now });
+    }
+  }
+
+  private applyPortal(player: InternalPlayer, now: number): void {
+    if (now < player.portalReadyAt) return;
+    const transfer = findPortalTransfer(player, this.generatedMap.layout);
+    if (!transfer || isBlocked(transfer, 0.36, this.generatedMap.layout)) return;
+    player.x = transfer.x;
+    player.y = transfer.y;
+    player.portalReadyAt = now + 900;
+    player.lastMovedAt = now;
+    const effect = {
+      type: "portal" as const,
+      x: player.x,
+      y: player.y,
+      label: `${transfer.targetLabel}으로 이동`,
+    };
+    if (this.phase === "HIDING" && player.role === "HIDER") {
+      this.broadcastEffect(effect, "HIDER");
+    } else {
+      this.broadcastEffect(effect, player.role);
     }
   }
 
@@ -554,7 +595,14 @@ export class NunchisoomRoom extends Room {
     player.swapUsed = true;
     player.lastMovedAt = Date.now();
     this.addReplay("swap", `${player.displayName} 님이 사물과 자리를 바꿨습니다.`);
-    this.broadcastEffect({ type: "swap", x: player.x, y: player.y, label: "종이조각 사이로 두 사물이 바뀌었습니다." });
+    const swapEffect = {
+      type: "swap" as const,
+      x: player.x,
+      y: player.y,
+      label: "종이조각 사이로 두 사물이 바뀌었습니다.",
+    };
+    if (this.phase === "HIDING") this.broadcastEffect(swapEffect, "HIDER");
+    else this.broadcastEffect(swapEffect);
   }
 
   private handleTag(client: Client, message: TagMessage): void {
@@ -662,7 +710,7 @@ export class NunchisoomRoom extends Room {
     if (!viewer) return;
     const now = Date.now();
     const revealRoles = this.phase === "RESULT" || this.phase === "FINAL";
-    const worldHidden = viewer.role === "SEEKER" && this.phase === "HIDING";
+    const seekerPreview = viewer.role === "SEEKER" && this.phase === "HIDING";
     const players: PublicPlayer[] = [...this.players.values()]
       .sort((a, b) => a.joinedAt - b.joinedAt)
       .map((player) => ({
@@ -678,7 +726,8 @@ export class NunchisoomRoom extends Room {
         ...(revealRoles ? { revealedRole: player.role } : {}),
       }));
 
-    const entities: WorldEntity[] = worldHidden ? [] : this.staticProps.map((prop) => ({
+    const visibleProps = seekerPreview ? this.baselineProps : this.staticProps;
+    const entities: WorldEntity[] = visibleProps.map((prop) => ({
       id: prop.id,
       category: "prop",
       propKind: prop.kind,
@@ -690,8 +739,8 @@ export class NunchisoomRoom extends Room {
       teammate: false,
       caught: false,
     }));
-    for (const player of worldHidden ? [] : this.players.values()) {
-      if (player.role === "HIDER" && !player.caught) {
+    for (const player of this.players.values()) {
+      if (player.role === "HIDER" && !player.caught && !seekerPreview) {
         entities.push({
           id: player.entityId,
           category: "prop",
@@ -746,7 +795,7 @@ export class NunchisoomRoom extends Room {
         (this.phase === "LOBBY" || this.phase === "FINAL") &&
         this.hasEnoughPlayers() &&
         this.humanPlayers().every((player) => player.ready),
-      worldHidden,
+      seekerPreview,
       self: {
         playerId: viewer.id,
         role: viewer.role,
@@ -847,6 +896,7 @@ export class NunchisoomRoom extends Room {
         lensReadyAt: 0,
         lastPingAt: 0,
         lastMovedAt: 0,
+        portalReadyAt: 0,
         lastSeq: -1,
         inputX: 0,
         inputY: 0,

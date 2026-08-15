@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 
 const phases = [
   { number: "01", title: "준비", copy: "별명을 정하고 친구방·공개방·연습방 중 하나에 입장해 준비를 누릅니다." },
-  { number: "02", title: "숨기 25초", copy: "틈새정령은 문구류로 변해 자리를 잡습니다. 관찰자는 문 밖에서 기다립니다." },
+  { number: "02", title: "숨기·기억 25초", copy: "틈새정령은 사물로 숨고, 관찰자는 숨는 장면 없이 기준 맵과 기본 사물·포탈을 직접 둘러봅니다." },
   { number: "03", title: "수색 65초", copy: "관찰자는 수상한 사물에 가까이 가 확인 스티커를 붙이고, 틈새정령은 미션을 노립니다." },
   { number: "04", title: "결과와 순환", copy: "주요 장면을 함께 보고 다음 라운드에 역할을 다시 공정하게 나눕니다." },
 ];
@@ -28,19 +28,19 @@ export default function HowToPlayPage() {
       </header>
 
       <section className="phase-guide" aria-labelledby="phase-title">
-        <div className="section-title"><span>한 경기의 흐름</span><h2 id="phase-title">3라운드, 라운드마다 두 역할</h2></div>
+        <div className="section-title"><span>한 경기의 흐름</span><h2 id="phase-title">3라운드, 매번 달라지는 3개 맵</h2></div>
         <div className="phase-cards">{phases.map((phase) => <article key={phase.number}><span>{phase.number}</span><strong>{phase.title}</strong><p>{phase.copy}</p></article>)}</div>
       </section>
 
       <section className="roles-guide" aria-label="역할 설명">
         <article className="hider-guide"><span aria-hidden="true">▣</span><div><small>숨는 팀</small><h2>틈새정령</h2><p>잡화점 물건과 똑같은 모습으로 숨습니다. 이동을 멈추는 ‘사물 고정’, 가까운 같은 물건과 바꾸는 ‘자리바꿈’을 활용하세요.</p><ul><li>미션 구역에서 2초간 고정하면 추가 점수</li><li>이동할 때 남는 짧은 파문에 주의</li><li>발견된 뒤에도 팀 핑으로 동료 지원</li></ul></div></article>
-        <article className="seeker-guide"><span aria-hidden="true">◎</span><div><small>찾는 팀</small><h2>관찰자</h2><p>밤지기 모루가 되어 배치와 움직임의 어색함을 관찰합니다. 가까운 사물을 클릭해 확인 스티커를 붙이세요.</p><ul><li>오답이면 집중력 25 감소와 재사용 대기</li><li>관찰 렌즈는 최근 움직임 구역만 표시</li><li>선반 너머나 먼 사물은 확인 불가</li></ul></div></article>
+        <article className="seeker-guide"><span aria-hidden="true">◎</span><div><small>찾는 팀</small><h2>관찰자</h2><p>숨기 시간에는 이용자를 보지 못한 채 기준 배치와 포탈을 탐색합니다. 수색이 시작되면 기억한 배치와 비교해 확인 스티커를 붙이세요.</p><ul><li>오답이면 집중력 25 감소와 재사용 대기</li><li>관찰 렌즈는 최근 움직임 구역만 표시</li><li>선반 너머나 먼 사물은 확인 불가</li></ul></div></article>
       </section>
 
       <section className="controls-guide">
         <div className="section-title"><span>조작과 접근성</span><h2>키보드와 터치 모두 지원</h2></div>
         <div className="control-grid">
-          <article><kbd>W A S D</kbd><kbd>↑ ← ↓ →</kbd><strong>이동</strong><p>대각선 속도도 서버에서 같은 값으로 보정합니다.</p></article>
+          <article><kbd>W A S D</kbd><kbd>↑ ← ↓ →</kbd><strong>빠른 이동</strong><p>대각선 속도도 서버에서 같은 값으로 보정하며, 포탈에 닿으면 짝 포탈로 이동합니다.</p></article>
           <article><kbd>클릭</kbd><kbd>터치</kbd><strong>확인 스티커</strong><p>관찰자일 때 가까운 사물을 선택합니다.</p></article>
           <article><kbd>색 + 모양</kbd><kbd>문구</kbd><strong>무음 정보</strong><p>색만으로 상태를 구분하지 않고 항상 아이콘과 텍스트를 함께 제공합니다.</p></article>
         </div>

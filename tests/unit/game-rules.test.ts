@@ -27,3 +27,8 @@ test("오답과 집중력 소진에 더 긴 재사용 대기를 적용한다", (
   assert.equal(tagCooldown(50, false, DEFAULT_RULES), DEFAULT_RULES.wrongTagCooldownMs);
   assert.equal(tagCooldown(0, false, DEFAULT_RULES), DEFAULT_RULES.emptyFocusCooldownMs);
 });
+
+test("키보드 이동 속도는 초당 5칸 이상이며 관찰자가 조금 더 빠르다", () => {
+  assert.ok(DEFAULT_RULES.hiderSpeed >= 5);
+  assert.ok(DEFAULT_RULES.seekerSpeed > DEFAULT_RULES.hiderSpeed);
+});
