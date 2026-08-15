@@ -1,0 +1,175 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { ColyseusSDK, type Room } from "@colyseus/sdk";
+import { FAST_TEST_RULES } from "../../shared/game-rules";
+import type { GameSnapshot } from "../../shared/game-types";
+import { createNunchisoomServer } from "../../server/index";
+
+test("4개 실제 소켓이 한 방에서 역할 비공개와 전체 라운드 전이를 지킨다", { timeout: 15_000 }, async () => {
+  const runtime = createNunchisoomServer({
+    allowedOrigins: [],
+    databasePath: ":memory:",
+    rules: FAST_TEST_RULES,
+    greet: false,
+  });
+  const rooms: Room[] = [];
+  try {
+    const port = await runtime.listen(0);
+    const clients = Array.from({ length: 4 }, () => new ColyseusSDK(`http://127.0.0.1:${port}`));
+    for (let index = 0; index < clients.length; index += 1) {
+      const joinedRoom = await clients[index].joinOrCreate("nunchisoom", {
+        mode: "public",
+        displayName: `검증자${index + 1}`,
+        deviceId: `integration-device-${index + 1}`,
+      });
+      registerExpectedMessages(joinedRoom);
+      rooms.push(joinedRoom);
+    }
+
+    assert.equal(new Set(rooms.map((room) => room.roomId)).size, 1);
+    const hidingSnapshots = rooms.map((room) => waitForSnapshot(room, (state) => state.phase === "HIDING"));
+    for (const room of rooms) room.send("ready", true);
+    const snapshots = await Promise.all(hidingSnapshots);
+
+    const seekerSnapshot = snapshots.find((state) => state.self.role === "SEEKER");
+    const hiderSnapshot = snapshots.find((state) => state.self.role === "HIDER");
+    assert.ok(seekerSnapshot);
+    assert.ok(hiderSnapshot);
+    assert.equal(seekerSnapshot.players.some((player) => player.revealedRole), false);
+    assert.equal(seekerSnapshot.worldHidden, true);
+    assert.equal(seekerSnapshot.entities.length, 0);
+    assert.equal(hiderSnapshot.entities.filter((entity) => entity.controlled).length, 1);
+
+    const seekerRoomIndex = snapshots.findIndex((state) => state.self.role === "SEEKER");
+    const seekingSnapshot = await waitForSnapshot(rooms[seekerRoomIndex], (state) => state.phase === "SEEKING");
+    assert.equal(seekingSnapshot.worldHidden, false);
+    assert.equal(seekingSnapshot.entities.every((entity) => entity.id.startsWith("object-") || entity.category === "seeker"), true);
+    assert.equal(seekingSnapshot.entities.filter((entity) => entity.category === "prop").every((entity) => !entity.controlled && !entity.teammate), true);
+    assert.equal(seekingSnapshot.players.every((player) => player.score === 0), true);
+
+    const controlledSeeker = seekingSnapshot.entities.find((entity) => entity.category === "seeker" && entity.controlled);
+    assert.ok(controlledSeeker);
+    rooms[seekerRoomIndex].send("move", { seq: 1, x: 1, y: 0 });
+    const movedSnapshot = await waitForSnapshot(
+      rooms[seekerRoomIndex],
+      (state) => state.phase === "SEEKING" && Boolean(state.entities.find(
+        (entity) => entity.category === "seeker" && entity.controlled && entity.x > controlledSeeker.x + 0.05,
+      )),
+      1_000,
+    );
+    rooms[seekerRoomIndex].send("move", { seq: 2, x: 0, y: 0 });
+    assert.ok(movedSnapshot.version > seekingSnapshot.version);
+
+    const final = await waitForSnapshot(rooms[0], (state) => state.phase === "FINAL", 6_000);
+    assert.equal(final.round, 1);
+    assert.equal(final.result?.winner, "HIDERS");
+    assert.equal(final.players.every((player) => Boolean(player.revealedRole)), true);
+    assert.equal(runtime.store.count(), 1);
+  } finally {
+    await Promise.allSettled(rooms.map((room) => room.leave(true)));
+    await runtime.shutdown();
+  }
+});
+
+test("초대방은 방 ID로 합류하고 공개 매칭에서는 제외된다", { timeout: 10_000 }, async () => {
+  const runtime = createNunchisoomServer({
+    allowedOrigins: [],
+    databasePath: ":memory:",
+    rules: FAST_TEST_RULES,
+    greet: false,
+  });
+  const rooms: Room[] = [];
+  try {
+    const port = await runtime.listen(0);
+    const hostClient = new ColyseusSDK(`http://127.0.0.1:${port}`);
+    const friendClient = new ColyseusSDK(`http://127.0.0.1:${port}`);
+    const publicClient = new ColyseusSDK(`http://127.0.0.1:${port}`);
+    const hostRoom = await hostClient.create("nunchisoom", {
+      mode: "invite",
+      displayName: "초대방장",
+      deviceId: "invite-host-device",
+    });
+    registerExpectedMessages(hostRoom);
+    rooms.push(hostRoom);
+    const friendRoom = await friendClient.joinById(hostRoom.roomId, {
+      mode: "invite",
+      displayName: "초대친구",
+      deviceId: "invite-friend-device",
+    });
+    registerExpectedMessages(friendRoom);
+    rooms.push(friendRoom);
+    const publicRoom = await publicClient.joinOrCreate("nunchisoom", {
+      mode: "public",
+      displayName: "공개참가자",
+      deviceId: "public-device-001",
+    });
+    registerExpectedMessages(publicRoom);
+    rooms.push(publicRoom);
+
+    assert.equal(friendRoom.roomId, hostRoom.roomId);
+    assert.notEqual(publicRoom.roomId, hostRoom.roomId);
+    const inviteSnapshot = await waitForSnapshot(hostRoom, (state) => state.players.length === 2);
+    assert.equal(inviteSnapshot.mode, "invite");
+  } finally {
+    await Promise.allSettled(rooms.map((room) => room.leave(true)));
+    await runtime.shutdown();
+  }
+});
+
+test("연습방은 한 명 준비 후 세 봇과 시작한다", { timeout: 10_000 }, async () => {
+  const runtime = createNunchisoomServer({
+    allowedOrigins: [],
+    databasePath: ":memory:",
+    rules: FAST_TEST_RULES,
+    greet: false,
+  });
+  let room: Room | undefined;
+  try {
+    const port = await runtime.listen(0);
+    const client = new ColyseusSDK(`http://127.0.0.1:${port}`);
+    room = await client.create("nunchisoom", {
+      mode: "practice",
+      displayName: "연습자",
+      deviceId: "practice-device-001",
+    });
+    registerExpectedMessages(room);
+    const hiding = waitForSnapshot(room, (state) => state.phase === "HIDING");
+    room.send("ready", true);
+    const snapshot = await hiding;
+    assert.equal(snapshot.mode, "practice");
+    assert.equal(snapshot.players.length, 4);
+    assert.equal(snapshot.maxPlayers, 4);
+    assert.equal(snapshot.players.filter((player) => player.bot).length, 3);
+    assert.equal(snapshot.self.role, "SEEKER");
+  } finally {
+    if (room) await room.leave(true);
+    await runtime.shutdown();
+  }
+});
+
+function registerExpectedMessages(room: Room): void {
+  room.onMessage<GameSnapshot>("state", () => {});
+  for (const type of ["notice", "effect", "lens", "ping", "action-error"]) {
+    room.onMessage(type, () => {});
+  }
+}
+
+function waitForSnapshot(
+  room: Room,
+  predicate: (snapshot: GameSnapshot) => boolean,
+  timeoutMs = 5_000,
+): Promise<GameSnapshot> {
+  return new Promise((resolve, reject) => {
+    let removeListener: () => void = () => {};
+    const timer = setTimeout(() => {
+      removeListener();
+      reject(new Error(`상태 대기 시간이 ${timeoutMs}ms를 넘었습니다.`));
+    }, timeoutMs);
+    removeListener = room.onMessage<GameSnapshot>("state", (snapshot) => {
+      if (!predicate(snapshot)) return;
+      clearTimeout(timer);
+      removeListener();
+      resolve(snapshot);
+    });
+  });
+}

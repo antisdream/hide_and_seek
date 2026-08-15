@@ -1,0 +1,165 @@
+export type RoomMode = "public" | "invite" | "practice";
+export type GamePhase = "LOBBY" | "COUNTDOWN" | "HIDING" | "SEEKING" | "RESULT" | "FINAL";
+export type PlayerRole = "HIDER" | "SEEKER" | "SPECTATOR";
+export type PropKind = "pencil" | "notebook" | "tape" | "eraser" | "box" | "ribbon";
+export type PingKind = "check" | "suspect" | "done" | "danger" | "moving";
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface Rect {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface Zone extends Point {
+  id: string;
+  label: string;
+  radius: number;
+}
+
+export interface StaticProp extends Point {
+  id: string;
+  kind: PropKind;
+  rotation: number;
+}
+
+export interface MapLayout {
+  version: string;
+  width: number;
+  height: number;
+  obstacles: Rect[];
+  zones: Zone[];
+}
+
+export interface GameRules {
+  tickRate: number;
+  minPlayers: number;
+  maxPlayers: number;
+  totalRounds: number;
+  countdownMs: number;
+  hidingMs: number;
+  seekingMs: number;
+  resultMs: number;
+  hiderSpeed: number;
+  seekerSpeed: number;
+  tagDistance: number;
+  tagCooldownMs: number;
+  wrongTagCooldownMs: number;
+  emptyFocusCooldownMs: number;
+  wrongTagPenalty: number;
+  focusRecoveryPerSecond: number;
+  focusRecoveryDelayMs: number;
+  swapDistance: number;
+  lensCooldownMs: number;
+  missionHoldMs: number;
+}
+
+export interface PublicPlayer {
+  id: string;
+  displayName: string;
+  avatar: string;
+  ready: boolean;
+  connected: boolean;
+  host: boolean;
+  bot: boolean;
+  score: number;
+  status: "lobby" | "playing" | "caught" | "waiting";
+  revealedRole?: PlayerRole;
+}
+
+export interface WorldEntity extends Point {
+  id: string;
+  category: "prop" | "seeker";
+  propKind?: PropKind;
+  rotation: number;
+  moving: boolean;
+  controlled: boolean;
+  teammate: boolean;
+  caught: boolean;
+  displayName?: string;
+  avatar?: string;
+}
+
+export interface MissionView {
+  zoneId: string;
+  label: string;
+  progress: number;
+  completed: boolean;
+}
+
+export interface SelfView {
+  playerId: string;
+  role: PlayerRole;
+  focus: number;
+  locked: boolean;
+  swapAvailable: boolean;
+  lensReadyAt: number;
+  caught: boolean;
+}
+
+export interface RoundResult {
+  winner: "HIDERS" | "SEEKERS";
+  reason: "ALL_CAUGHT" | "TIME_UP";
+  headline: string;
+}
+
+export interface ReplayBeat {
+  id: string;
+  at: number;
+  type: "tag" | "wrong-tag" | "swap" | "mission" | "last-second";
+  label: string;
+}
+
+export interface GameSnapshot {
+  version: number;
+  serverTime: number;
+  roomId: string;
+  mode: RoomMode;
+  phase: GamePhase;
+  phaseEndsAt: number;
+  round: number;
+  totalRounds: number;
+  minPlayers: number;
+  maxPlayers: number;
+  canStart: boolean;
+  worldHidden: boolean;
+  self: SelfView;
+  players: PublicPlayer[];
+  entities: WorldEntity[];
+  map: MapLayout;
+  mission?: MissionView;
+  result?: RoundResult;
+  replay: ReplayBeat[];
+}
+
+export interface MoveMessage {
+  seq: number;
+  x: number;
+  y: number;
+}
+
+export interface TagMessage {
+  seq: number;
+  entityId: string;
+}
+
+export interface GameEffect {
+  id: string;
+  type: "correct-tag" | "wrong-tag" | "swap" | "focus-empty" | "mission" | "phase";
+  x?: number;
+  y?: number;
+  label: string;
+}
+
+export interface TeamPing extends Point {
+  id: string;
+  playerId: string;
+  kind: PingKind;
+  createdAt: number;
+}

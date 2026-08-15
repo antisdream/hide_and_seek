@@ -1,0 +1,18 @@
+services:
+  game-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    environment:
+      GAME_HOST: 0.0.0.0
+      GAME_PORT: 2567
+      ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      FAST_GAME: 0
+    ports:
+      - "2567:2567"
+    volumes:
+      - game-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  game-data:

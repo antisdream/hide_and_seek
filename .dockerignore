@@ -1,0 +1,14 @@
+# 컨테이너에 필요하지 않은 로컬·빌드 파일
+node_modules
+dist
+.next
+.vinext
+.wrangler
+data
+.git
+.env*
+docs
+tests
+public
+app
+worker
