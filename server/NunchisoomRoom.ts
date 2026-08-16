@@ -351,7 +351,14 @@ export class NunchisoomRoom extends Room {
   private startRound(now: number): void {
     this.round += 1;
     if (!this.matchStartedAt) this.matchStartedAt = now;
-    const seed = randomBytes(4).readUInt32BE(0);
+    // Node와 Workers 타입을 함께 사용할 때 Buffer 전용 메서드에 의존하지 않도록 바이트로 시드를 조합한다.
+    const seedBytes = randomBytes(4);
+    const seed = (
+      (seedBytes[0] << 24)
+      | (seedBytes[1] << 16)
+      | (seedBytes[2] << 8)
+      | seedBytes[3]
+    ) >>> 0;
     this.generatedMap = createMapForRound(seed, this.round);
     this.staticProps = this.generatedMap.staticProps.map((prop) => ({ ...prop, id: opaqueId("object") }));
     this.baselineProps = this.staticProps.map((prop) => ({ ...prop }));
