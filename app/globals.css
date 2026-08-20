@@ -220,7 +220,16 @@ button { color: inherit; }
 .invite-found { margin-top: 18px; padding: 16px; border-radius: 16px; background: #effff9; }
 .invite-found > div { margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
 .invite-found span { color: #447a6b; font-size: 12px; font-weight: 900; }
-.invite-found strong { letter-spacing: .09em; }
+.invite-found strong { max-width: 230px; overflow-wrap: anywhere; text-align: right; letter-spacing: .09em; }
+.invite-join { margin-top: 18px; padding-top: 17px; border-top: 1px dashed #cfc8bd; }
+.invite-join label { display: block; margin-bottom: 9px; }
+.invite-join label strong, .invite-join label small { display: block; }
+.invite-join label strong { color: var(--ink); font-size: 13px; }
+.invite-join label small { margin-top: 3px; color: var(--muted); font-size: 10px; }
+.invite-join > div { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.invite-join .text-input { min-width: 0; min-height: 46px; font-size: 13px; }
+.invite-join button { min-width: 68px; border: 2px solid var(--ink); border-radius: 13px; background: var(--blue); color: white; cursor: pointer; font-weight: 900; }
+.invite-join button:disabled { cursor: wait; opacity: .62; }
 .wide { width: 100%; }
 .notice-card { margin-top: 15px; padding: 11px 13px; display: flex; gap: 8px; border-radius: 12px; background: #f2f0f6; color: #5f596b; font-size: 12px; line-height: 1.45; }
 .notice-card.error { background: #fff0ee; color: #9a3732; }
@@ -253,6 +262,8 @@ button { color: inherit; }
 .phase-summary small { color: #9fa7bd; font-size: 10px; font-weight: 800; }
 .phase-summary strong { font-size: 15px; }
 .phase-summary time { min-width: 76px; color: var(--yellow); font-size: 24px; font-weight: 900; font-variant-numeric: tabular-nums; }
+.phase-summary.urgent strong, .phase-summary.urgent time { color: #ff8f85; }
+.phase-summary.urgent .phase-icon { background: #ff6f61; box-shadow: 0 0 0 5px rgba(255,111,97,.18); animation: dangerPulse .7s infinite; }
 .phase-icon { width: 10px; height: 10px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 0 5px rgba(99,214,181,.12); }
 .phase-countdown { background: var(--yellow); }
 .phase-result, .phase-final { background: var(--coral); }
@@ -297,6 +308,9 @@ button { color: inherit; }
 .game-column { min-width: 0; padding: 20px; display: flex; flex-direction: column; background: #171a2f; }
 .canvas-frame { width: 100%; aspect-ratio: 3 / 2; max-height: calc(100vh - 143px); position: relative; overflow: hidden; border: 2px solid #444a64; border-radius: 18px; background: #28304a; box-shadow: 0 13px 30px rgba(0,0,0,.2); }
 .phaser-host, .phaser-host canvas { width: 100% !important; height: 100% !important; display: block; }
+.phaser-host.preview-camera-active canvas { cursor: grab; }
+.phaser-host.preview-camera-dragging canvas { cursor: grabbing; }
+.canvas-frame.final-chase { border-color: #ff6f61; box-shadow: 0 0 0 3px rgba(255,111,97,.16), 0 13px 30px rgba(0,0,0,.2); animation: dangerFrame 1s infinite; }
 .map-ribbon { position: absolute; left: 13px; top: 13px; z-index: 7; display: flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid #69738f; border-radius: 10px; background: rgba(23,26,47,.84); box-shadow: 0 4px 12px rgba(0,0,0,.18); }
 .map-ribbon span { color: var(--yellow); font-size: 10px; font-weight: 900; }
 .map-ribbon strong { color: white; font-size: 11px; }
@@ -305,6 +319,11 @@ button { color: inherit; }
 .preview-ribbon strong, .preview-ribbon small { display: block; }
 .preview-ribbon strong { color: #edfff9; font-size: 11px; }
 .preview-ribbon small { margin-top: 2px; color: #bfe5dc; font-size: 8px; line-height: 1.35; }
+.final-chase-ribbon { position: absolute; left: 50%; bottom: 14px; z-index: 9; padding: 8px 13px; display: grid; grid-template-columns: 25px auto; column-gap: 8px; align-items: center; border: 1px solid #ff8f85; border-radius: 12px; background: rgba(93,35,43,.94); transform: translateX(-50%); }
+.final-chase-ribbon > span { width: 25px; height: 25px; grid-row: span 2; display: grid; place-items: center; border-radius: 50%; background: #ff6f61; color: white; font-weight: 900; }
+.final-chase-ribbon strong, .final-chase-ribbon small { display: block; white-space: nowrap; }
+.final-chase-ribbon strong { color: white; font-size: 11px; }
+.final-chase-ribbon small { color: #ffd2cc; font-size: 8px; }
 .game-overlay { position: absolute; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: rgba(23,26,47,.84); backdrop-filter: blur(4px); text-align: center; }
 .game-overlay strong { max-width: 680px; padding: 0 28px; color: white; font-size: clamp(23px, 3vw, 38px); }
 .game-overlay span { color: var(--mint); font-size: 13px; font-weight: 900; }
@@ -349,6 +368,9 @@ button { color: inherit; }
 .tag-tip > span { color: var(--yellow); font-size: 20px; }
 .tag-tip p { margin: 0; color: #aeb5c7; font-size: 9px; line-height: 1.45; }
 .tag-tip strong { color: white; }
+.tag-tip.cooling { border-color: #8c604f; background: #3a2e3d; }
+.tag-tip.cooling > span { color: var(--coral); }
+.tag-tip.cooling strong { color: #ffd2cc; }
 .ping-panel { margin-top: 14px; padding-top: 12px; border-top: 1px solid #373c56; }
 .ping-panel > span { color: #979fb3; font-size: 9px; font-weight: 900; }
 .ping-panel > div { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 5px; }
@@ -363,6 +385,8 @@ button { color: inherit; }
 
 @keyframes paradeBob { 0%, 100% { translate: 0 0; } 50% { translate: 0 -7px; } }
 @keyframes statusPulse { 50% { opacity: .35; } }
+@keyframes dangerPulse { 50% { opacity: .45; transform: scale(.78); } }
+@keyframes dangerFrame { 50% { box-shadow: 0 0 0 5px rgba(255,111,97,.08), 0 13px 30px rgba(0,0,0,.2); } }
 
 @media (max-width: 1120px) {
   .play-grid { grid-template-columns: 220px minmax(470px, 1fr) 230px; }

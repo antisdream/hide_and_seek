@@ -28,7 +28,21 @@ test("오답과 집중력 소진에 더 긴 재사용 대기를 적용한다", (
   assert.equal(tagCooldown(0, false, DEFAULT_RULES), DEFAULT_RULES.emptyFocusCooldownMs);
 });
 
-test("키보드 이동 속도는 초당 5칸 이상이며 관찰자가 조금 더 빠르다", () => {
+test("관찰자는 틈새정령보다 최소 25퍼센트 빠르다", () => {
   assert.ok(DEFAULT_RULES.hiderSpeed >= 5);
-  assert.ok(DEFAULT_RULES.seekerSpeed > DEFAULT_RULES.hiderSpeed);
+  assert.ok(DEFAULT_RULES.seekerSpeed / DEFAULT_RULES.hiderSpeed >= 1.25);
+});
+
+test("확인 스티커는 결과에 따라 체감 가능한 재사용 대기를 둔다", () => {
+  assert.ok(DEFAULT_RULES.tagCooldownMs >= 1_000);
+  assert.ok(DEFAULT_RULES.wrongTagCooldownMs >= DEFAULT_RULES.tagCooldownMs * 2);
+  assert.ok(DEFAULT_RULES.emptyFocusCooldownMs > DEFAULT_RULES.wrongTagCooldownMs);
+});
+
+test("한 라운드는 무음 플레이에 맞춰 90초 안에 결과까지 끝난다", () => {
+  const roundMs = DEFAULT_RULES.countdownMs
+    + DEFAULT_RULES.hidingMs
+    + DEFAULT_RULES.seekingMs
+    + DEFAULT_RULES.resultMs;
+  assert.ok(roundMs <= 90_000);
 });

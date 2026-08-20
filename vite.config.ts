@@ -1,6 +1,6 @@
 import { sites } from "@openai/sites-vite-plugin";
 import vinext from "vinext";
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import hostingConfig from "./.openai/hosting.json" with { type: "json" };
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
@@ -33,7 +33,14 @@ const localBindingConfig = {
     : [],
 };
 
-export default defineConfig(async () => {
+export default defineConfig(async ({ mode }) => {
+  const loadedEnv = loadEnv(mode, process.cwd(), "");
+  const publicGameServerUrl = process.env.NEXT_PUBLIC_GAME_SERVER_URL
+    ?? loadedEnv.NEXT_PUBLIC_GAME_SERVER_URL
+    ?? "http://127.0.0.1:2567";
+  const publicSiteUrl = process.env.NEXT_PUBLIC_SITE_URL
+    ?? loadedEnv.NEXT_PUBLIC_SITE_URL
+    ?? "http://localhost:3000";
   // Wrangler와 Miniflare의 비밀이 아닌 도구 상태만 프로젝트 안에 보관한다.
   // 실제 환경 변수는 Git에서 제외한 `.env*` 파일에 둔다.
   process.env.WRANGLER_WRITE_LOGS ??= "false";
@@ -44,6 +51,11 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
+    // vinext의 클라이언트 번들에도 공개 접속 주소를 빌드 시점에 명시적으로 주입한다.
+    define: {
+      "process.env.NEXT_PUBLIC_GAME_SERVER_URL": JSON.stringify(publicGameServerUrl),
+      "process.env.NEXT_PUBLIC_SITE_URL": JSON.stringify(publicSiteUrl),
+    },
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,

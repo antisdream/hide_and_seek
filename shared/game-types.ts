@@ -112,6 +112,7 @@ export interface SelfView {
   focus: number;
   locked: boolean;
   swapAvailable: boolean;
+  tagReadyAt: number;
   lensReadyAt: number;
   caught: boolean;
 }

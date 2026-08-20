@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* 현재는 기본 설정을 사용하며 운영 보안 헤더는 배포 계층에서 추가한다. */
+  /* Docker 런타임은 빌드 결과만 복사해 가볍게 실행한다. */
+  output: "standalone",
 };
 
 export default nextConfig;

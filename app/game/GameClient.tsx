@@ -11,6 +11,7 @@ import type {
   RoomMode,
   TeamPing,
 } from "../../shared/game-types";
+import { normalizeInviteCode } from "../../shared/invite-code";
 import { mountGameRenderer, type GameRenderer, type LensPulse } from "./game-renderer";
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "reconnecting" | "closed";
@@ -27,6 +28,7 @@ const GAME_ENDPOINT = process.env.NEXT_PUBLIC_GAME_SERVER_URL ?? "http://127.0.0
 export default function GameClient() {
   const [displayName, setDisplayName] = useState("");
   const [inviteRoomId, setInviteRoomId] = useState("");
+  const [inviteCodeInput, setInviteCodeInput] = useState("");
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [room, setRoom] = useState<Room>();
   const [snapshot, setSnapshot] = useState<GameSnapshot>();
@@ -43,7 +45,9 @@ export default function GameClient() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setDisplayName(window.localStorage.getItem("nunchisoom-display-name") ?? "");
-      setInviteRoomId(new URLSearchParams(window.location.search).get("room") ?? "");
+      const roomId = new URLSearchParams(window.location.search).get("room") ?? "";
+      setInviteRoomId(roomId);
+      setInviteCodeInput(roomId);
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
@@ -121,6 +125,11 @@ export default function GameClient() {
 
   const connect = useCallback(async (mode: RoomMode, requestedRoomId?: string) => {
     if (status === "connecting") return;
+    const normalizedRoomId = requestedRoomId ? normalizeInviteCode(requestedRoomId) : undefined;
+    if (requestedRoomId && !normalizedRoomId) {
+      setNotice({ id: crypto.randomUUID(), title: "초대 코드 확인", label: "올바른 초대 코드 또는 초대 링크를 입력해 주세요.", tone: "error" });
+      return;
+    }
     const normalizedName = displayName.normalize("NFKC").trim().slice(0, 12);
     if (!normalizedName) {
       setNotice({ id: crypto.randomUUID(), title: "별명 확인", label: "1~12자의 별명을 입력해 주세요.", tone: "error" });
@@ -137,8 +146,8 @@ export default function GameClient() {
         deviceId: getDeviceId(),
         mode,
       };
-      const joinedRoom = requestedRoomId
-        ? await client.joinById(requestedRoomId, options)
+      const joinedRoom = normalizedRoomId
+        ? await client.joinById(normalizedRoomId, options)
         : mode === "public"
           ? await client.joinOrCreate("nunchisoom", options)
           : await client.create("nunchisoom", options);
@@ -182,7 +191,7 @@ export default function GameClient() {
       setNotice({ id: crypto.randomUUID(), label: "잡화점에 입장했습니다.", tone: "success" });
       sequenceRef.current = 0;
 
-      if (mode !== "public" && !requestedRoomId) {
+      if (mode !== "public" && !normalizedRoomId) {
         const url = new URL(window.location.href);
         url.pathname = "/game";
         url.search = `?room=${encodeURIComponent(joinedRoom.roomId)}`;
@@ -207,6 +216,8 @@ export default function GameClient() {
     setRoom(undefined);
     setSnapshot(undefined);
     setStatus("idle");
+    setInviteRoomId("");
+    setInviteCodeInput("");
     window.history.replaceState({}, "", "/game");
   }, []);
 
@@ -230,6 +241,9 @@ export default function GameClient() {
     if (active) pressedKeysRef.current.add(key);
     else pressedKeysRef.current.delete(key);
   }, []);
+
+  const serverNow = clockNow + serverOffset;
+  const finalChase = isFinalChase(snapshot, serverNow);
 
   if (!room) {
     return (
@@ -264,7 +278,7 @@ export default function GameClient() {
 
             {inviteRoomId ? (
               <div className="invite-found">
-                <div><span>초대장 도착</span><strong>{shortRoomId(inviteRoomId)}</strong></div>
+                <div><span>초대장 도착</span><strong>{inviteRoomId}</strong></div>
                 <button className="primary-button wide" type="button" disabled={status === "connecting"} onClick={() => void connect("invite", inviteRoomId)}>
                   초대방 입장
                 </button>
@@ -282,6 +296,29 @@ export default function GameClient() {
                 </button>
               </div>
             )}
+            {!inviteRoomId && (
+              <form
+                className="invite-join"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void connect("invite", inviteCodeInput);
+                }}
+              >
+                <label htmlFor="invite-code"><strong>초대 코드로 참가</strong><small>친구가 보낸 코드 또는 링크를 붙여 넣으세요.</small></label>
+                <div>
+                  <input
+                    id="invite-code"
+                    className="text-input"
+                    value={inviteCodeInput}
+                    onChange={(event) => setInviteCodeInput(event.target.value)}
+                    placeholder="초대 코드 또는 링크"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <button type="submit" disabled={status === "connecting"}>참가</button>
+                </div>
+              </form>
+            )}
             <p className="join-safety">회원가입·음성채팅 없이 플레이 · 능력치 판매 없음</p>
             {notice && <NoticeCard notice={notice} />}
           </div>
@@ -296,10 +333,10 @@ export default function GameClient() {
         <Link className="brand compact" href="/" aria-label="눈치숨 홈">
           <span className="brand-mark" aria-hidden="true">눈</span><span>눈치숨</span>
         </Link>
-        <div className="phase-summary" aria-live="polite">
+        <div className={finalChase ? "phase-summary urgent" : "phase-summary"} aria-live="polite">
           <span className={`phase-icon phase-${snapshot?.phase.toLowerCase() ?? "lobby"}`} aria-hidden="true" />
-          <div><small>{phaseKicker(snapshot?.phase)}</small><strong>{phaseLabel(snapshot?.phase)}</strong></div>
-          <time>{formatRemaining(snapshot, clockNow + serverOffset)}</time>
+          <div><small>{finalChase ? "무음 위험 경보" : phaseKicker(snapshot?.phase)}</small><strong>{finalChase ? "마지막 추격" : phaseLabel(snapshot?.phase)}</strong></div>
+          <time>{formatRemaining(snapshot, serverNow)}</time>
         </div>
         <div className="room-tools">
           <button type="button" onClick={() => void copyInvite()} title="초대 링크 복사">
@@ -328,7 +365,7 @@ export default function GameClient() {
         </aside>
 
         <section className="game-column" aria-label="게임 화면">
-          <div className="canvas-frame">
+          <div className={finalChase ? "canvas-frame final-chase" : "canvas-frame"}>
             <div ref={canvasRef} className="phaser-host" />
             {snapshot && (
               <div className="map-ribbon">
@@ -336,13 +373,14 @@ export default function GameClient() {
               </div>
             )}
             {status === "reconnecting" && <div className="game-overlay"><strong>다시 연결하는 중…</strong><span>10초 동안 자리를 지켜드려요.</span></div>}
-            {snapshot?.phase === "COUNTDOWN" && <div className="game-overlay compact-overlay"><strong>{formatRemaining(snapshot, clockNow + serverOffset)}</strong><span>역할표를 확인하세요</span></div>}
+            {snapshot?.phase === "COUNTDOWN" && <div className="game-overlay compact-overlay"><strong>{formatRemaining(snapshot, serverNow)}</strong><span>역할표를 확인하세요</span></div>}
             {snapshot?.seekerPreview && (
               <div className="preview-ribbon">
                 <span aria-hidden="true">◎</span>
-                <div><strong>기준 맵 탐색 중</strong><small>숨는 장면은 보이지 않아요 · 기본 사물과 포탈 위치를 기억하세요</small></div>
+                <div><strong>기준 맵 탐색 중</strong><small>마우스 드래그 이동 · 휠 확대/축소 · 숨는 이용자는 보이지 않아요</small></div>
               </div>
             )}
+            {finalChase && <div className="final-chase-ribbon"><span aria-hidden="true">!</span><strong>마지막 15초</strong><small>시간이 끝나기 전에 남은 틈새정령을 찾으세요</small></div>}
             {snapshot?.result && <ResultOverlay snapshot={snapshot} />}
             {snapshot?.self.caught && snapshot.phase === "SEEKING" && <div className="caught-ribbon">발견됐어요 · 팀 핑으로 계속 도울 수 있어요</div>}
           </div>
@@ -408,15 +446,16 @@ function ActionButtons({ snapshot, send }: { snapshot?: GameSnapshot; send: (typ
   if (snapshot.seekerPreview) {
     return (
       <div className="action-empty preview-actions">
-        <strong>기억 시간</strong><br />WASD·방향키로 맵을 돌며 문과 포탈의 도착 위치를 확인하세요.
+        <strong>기억 시간</strong><br />전체 맵에서 마우스를 끌어 이동하고 휠로 확대하세요. WASD·방향키로 포탈 도착점도 직접 확인할 수 있어요.
       </div>
     );
   }
   const lensSeconds = Math.max(0, Math.ceil((snapshot.self.lensReadyAt - snapshot.serverTime) / 1_000));
+  const tagSeconds = Math.max(0, Math.ceil((snapshot.self.tagReadyAt - snapshot.serverTime) / 100) / 10);
   return (
     <div className="action-buttons">
       <button type="button" disabled={lensSeconds > 0} onClick={() => send("lens", true)}><span>⌾</span><strong>관찰 렌즈</strong><small>{lensSeconds > 0 ? `${lensSeconds}초 뒤 충전` : "최근 움직임을 구역으로 표시"}</small></button>
-      <div className="tag-tip"><span aria-hidden="true">☝</span><p><strong>확인 스티커</strong><br />가까운 사물을 직접 클릭하세요.</p></div>
+      <div className={tagSeconds > 0 ? "tag-tip cooling" : "tag-tip"}><span aria-hidden="true">☝</span><p><strong>확인 스티커</strong><br />{tagSeconds > 0 ? `${tagSeconds.toFixed(1)}초 뒤 다시 확인` : "가까운 사물을 직접 클릭하세요."}</p></div>
     </div>
   );
 }
@@ -513,6 +552,12 @@ function formatRemaining(snapshot: GameSnapshot | undefined, serverNow: number):
   return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+function isFinalChase(snapshot: GameSnapshot | undefined, serverNow: number): boolean {
+  if (snapshot?.phase !== "SEEKING") return false;
+  const remaining = snapshot.phaseEndsAt - serverNow;
+  return remaining > 0 && remaining <= 15_000;
+}
+
 function phaseKicker(phase?: GamePhase): string {
   return ({ LOBBY: "입장과 준비", COUNTDOWN: "역할 배정", HIDING: "숨기·기준 맵 탐색", SEEKING: "밤지기 수색", RESULT: "라운드 결과", FINAL: "최종 결과" } as Record<GamePhase, string>)[phase ?? "LOBBY"];
 }
@@ -547,6 +592,7 @@ function shortRoomId(roomId: string): string {
 
 function readableError(error: unknown): string {
   if (error instanceof Error) {
+    if (/room.*(not found|does not exist)|not found.*room|4212/i.test(error.message)) return "초대 코드에 해당하는 방을 찾지 못했습니다. 코드를 다시 확인해 주세요.";
     if (/fetch|network|connection|socket/i.test(error.message)) return "게임 서버가 실행 중인지 확인해 주세요.";
     return error.message;
   }

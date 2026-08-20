@@ -619,7 +619,8 @@ export class NunchisoomRoom extends Room {
     if (message.seq <= seeker.lastSeq) return;
     seeker.lastSeq = message.seq;
     if (now < seeker.tagReadyAt || seeker.focus <= 0) {
-      this.sendError(client, "태그 대기", "집중력이 돌아올 때까지 잠시 관찰하세요.");
+      const waitSeconds = Math.max(0.1, Math.ceil((seeker.tagReadyAt - now) / 100) / 10);
+      this.sendError(client, "확인 대기", `확인 스티커 재사용까지 ${waitSeconds.toFixed(1)}초 남았습니다.`);
       return;
     }
 
@@ -657,7 +658,7 @@ export class NunchisoomRoom extends Room {
         type: seeker.focus <= 0 ? "focus-empty" : "wrong-tag",
         x: target.x,
         y: target.y,
-        label: seeker.focus <= 0 ? "집중력 소진 — 5초간 관찰만 가능" : "평범한 사물입니다.",
+        label: seeker.focus <= 0 ? "집중력 소진 — 잠시 관찰만 가능" : "평범한 사물입니다.",
       } satisfies GameEffect);
     }
   }
@@ -809,6 +810,7 @@ export class NunchisoomRoom extends Room {
         focus: Math.round(viewer.focus),
         locked: viewer.locked,
         swapAvailable: !viewer.swapUsed,
+        tagReadyAt: viewer.tagReadyAt,
         lensReadyAt: viewer.lensReadyAt,
         caught: viewer.caught,
       },

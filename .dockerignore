@@ -9,6 +9,5 @@ data
 .env*
 docs
 tests
-public
-app
-worker
+coverage
+*.log

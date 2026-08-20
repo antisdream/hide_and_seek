@@ -47,6 +47,25 @@ interface MapPalette {
 const TILE = 40;
 const VIEW_WIDTH = 24 * TILE;
 const VIEW_HEIGHT = 16 * TILE;
+const PREVIEW_MAX_ZOOM = 1.25;
+
+/** 큰 맵도 처음에는 한 화면에 들어오도록 사전 탐색 배율을 계산한다. */
+export function previewCameraZoom(
+  worldWidth: number,
+  worldHeight: number,
+  viewWidth = VIEW_WIDTH,
+  viewHeight = VIEW_HEIGHT,
+): number {
+  const fitZoom = Math.min(viewWidth / worldWidth, viewHeight / worldHeight) * 0.92;
+  return Math.max(0.35, Math.min(1, fitZoom));
+}
+
+/** 확대 상태에서 카메라가 맵 밖으로 완전히 벗어나지 않게 스크롤을 제한한다. */
+export function clampPreviewScroll(scroll: number, worldSize: number, viewSize: number, zoom: number): number {
+  const visibleSize = viewSize / zoom;
+  if (visibleSize >= worldSize) return (worldSize - visibleSize) / 2;
+  return Math.max(0, Math.min(worldSize - visibleSize, scroll));
+}
 
 /**
  * 서버 좌표를 목표값으로 유지하고 Phaser 프레임 사이에서 보간한다.
@@ -71,6 +90,15 @@ export async function mountGameRenderer(
     private sceneReady = false;
     private mapKey = "";
     private followedEntityId = "";
+    private previewCameraActive = false;
+    private previewPointerId = -1;
+    private previewPointerX = 0;
+    private previewPointerY = 0;
+    private previewScrollX = 0;
+    private previewScrollY = 0;
+    private previewMinZoom = 1;
+    private previewWorldWidth = VIEW_WIDTH;
+    private previewWorldHeight = VIEW_HEIGHT;
 
     constructor() {
       super("night-stationery");
@@ -79,6 +107,11 @@ export async function mountGameRenderer(
     create(): void {
       this.sceneReady = true;
       this.cameras.main.setBackgroundColor("#171a33");
+      this.input.on("pointerdown", this.beginPreviewDrag, this);
+      this.input.on("pointermove", this.movePreviewCamera, this);
+      this.input.on("pointerup", this.endPreviewDrag, this);
+      this.input.on("pointerupoutside", this.endPreviewDrag, this);
+      this.input.on("wheel", this.zoomPreviewCamera, this);
       if (this.snapshot) this.applySnapshot(this.snapshot);
       else this.drawWaitingBoard();
     }
@@ -143,7 +176,8 @@ export async function mountGameRenderer(
         this.rebuildStaticMap(snapshot);
         this.clearEntities();
       }
-      this.reconcileEntities(snapshot.entities);
+      this.syncPreviewCamera(snapshot);
+      this.reconcileEntities(snapshot.entities, snapshot.seekerPreview);
     }
 
     private rebuildStaticMap(snapshot: GameSnapshot): void {
@@ -196,13 +230,14 @@ export async function mountGameRenderer(
       const worldWidth = snapshot.map.width * TILE;
       const worldHeight = snapshot.map.height * TILE;
       this.cameras.main.stopFollow();
+      this.cameras.main.setZoom(1);
       this.cameras.main.setBounds(0, 0, worldWidth, worldHeight);
       this.cameras.main.centerOn(worldWidth / 2, worldHeight / 2);
       this.followedEntityId = "";
       this.redrawTransients();
     }
 
-    private reconcileEntities(entities: WorldEntity[]): void {
+    private reconcileEntities(entities: WorldEntity[], seekerPreview: boolean): void {
       const visibleIds = new Set(entities.map((entity) => entity.id));
       for (const [id, view] of this.entityViews) {
         if (visibleIds.has(id)) continue;
@@ -236,13 +271,101 @@ export async function mountGameRenderer(
         if (entity.controlled) controlledId = entity.id;
       }
 
-      if (controlledId && controlledId !== this.followedEntityId) {
+      if (!seekerPreview && controlledId && controlledId !== this.followedEntityId) {
         const controlled = this.entityViews.get(controlledId)?.container;
         if (controlled) {
           this.cameras.main.startFollow(controlled, true, 0.14, 0.14);
           this.followedEntityId = controlledId;
         }
       }
+    }
+
+    private syncPreviewCamera(snapshot: GameSnapshot): void {
+      const camera = this.cameras.main;
+      const worldWidth = snapshot.map.width * TILE;
+      const worldHeight = snapshot.map.height * TILE;
+      if (snapshot.seekerPreview) {
+        const mapChanged = worldWidth !== this.previewWorldWidth || worldHeight !== this.previewWorldHeight;
+        if (!this.previewCameraActive || mapChanged) {
+          this.previewCameraActive = true;
+          this.previewWorldWidth = worldWidth;
+          this.previewWorldHeight = worldHeight;
+          this.previewMinZoom = previewCameraZoom(worldWidth, worldHeight, camera.width, camera.height);
+          camera.stopFollow();
+          camera.setZoom(this.previewMinZoom);
+          camera.centerOn(worldWidth / 2, worldHeight / 2);
+          this.followedEntityId = "";
+          parent.classList.add("preview-camera-active");
+        }
+        return;
+      }
+
+      if (!this.previewCameraActive) return;
+      this.previewCameraActive = false;
+      this.previewPointerId = -1;
+      camera.setZoom(1);
+      this.followedEntityId = "";
+      parent.classList.remove("preview-camera-active", "preview-camera-dragging");
+    }
+
+    private beginPreviewDrag(pointer: Phaser.Input.Pointer): void {
+      if (!this.previewCameraActive) return;
+      this.previewPointerId = pointer.id;
+      this.previewPointerX = pointer.x;
+      this.previewPointerY = pointer.y;
+      this.previewScrollX = this.cameras.main.scrollX;
+      this.previewScrollY = this.cameras.main.scrollY;
+      parent.classList.add("preview-camera-dragging");
+    }
+
+    private movePreviewCamera(pointer: Phaser.Input.Pointer): void {
+      if (!this.previewCameraActive || pointer.id !== this.previewPointerId || !pointer.isDown) return;
+      const camera = this.cameras.main;
+      camera.scrollX = clampPreviewScroll(
+        this.previewScrollX - (pointer.x - this.previewPointerX) / camera.zoom,
+        this.previewWorldWidth,
+        camera.width,
+        camera.zoom,
+      );
+      camera.scrollY = clampPreviewScroll(
+        this.previewScrollY - (pointer.y - this.previewPointerY) / camera.zoom,
+        this.previewWorldHeight,
+        camera.height,
+        camera.zoom,
+      );
+    }
+
+    private endPreviewDrag(pointer: Phaser.Input.Pointer): void {
+      if (pointer.id !== this.previewPointerId) return;
+      this.previewPointerId = -1;
+      parent.classList.remove("preview-camera-dragging");
+    }
+
+    private zoomPreviewCamera(
+      pointer: Phaser.Input.Pointer,
+      _over: Phaser.GameObjects.GameObject[],
+      _deltaX: number,
+      deltaY: number,
+    ): void {
+      if (!this.previewCameraActive || deltaY === 0) return;
+      pointer.event?.preventDefault();
+      const camera = this.cameras.main;
+      const before = camera.getWorldPoint(pointer.x, pointer.y);
+      const direction = deltaY > 0 ? 0.88 : 1.12;
+      camera.setZoom(Math.max(this.previewMinZoom, Math.min(PREVIEW_MAX_ZOOM, camera.zoom * direction)));
+      const after = camera.getWorldPoint(pointer.x, pointer.y);
+      camera.scrollX = clampPreviewScroll(
+        camera.scrollX + before.x - after.x,
+        this.previewWorldWidth,
+        camera.width,
+        camera.zoom,
+      );
+      camera.scrollY = clampPreviewScroll(
+        camera.scrollY + before.y - after.y,
+        this.previewWorldHeight,
+        camera.height,
+        camera.zoom,
+      );
     }
 
     private clearEntities(): void {
@@ -330,7 +453,11 @@ export async function mountGameRenderer(
       if (entity.category === "seeker") this.drawSeeker(container, entity);
       else this.drawProp(container, entity.propKind ?? "notebook", entity);
       container.setSize(42, 42).setInteractive({ useHandCursor: true });
-      container.on("pointerdown", () => callbacks.onTag(entity.id));
+      container.on("pointerdown", () => {
+        if (this.snapshot?.seekerPreview) return;
+        if ((this.snapshot?.self.tagReadyAt ?? 0) > (this.snapshot?.serverTime ?? 0)) return;
+        callbacks.onTag(entity.id);
+      });
       return container;
     }
 
@@ -493,7 +620,10 @@ export async function mountGameRenderer(
     pushEffect: (effect) => scene.addEffect(effect),
     pushLens: (pulse) => scene.addLens(pulse),
     pushPing: (ping) => scene.addPing(ping),
-    destroy: () => game.destroy(true),
+    destroy: () => {
+      parent.classList.remove("preview-camera-active", "preview-camera-dragging");
+      game.destroy(true);
+    },
   };
 }
 

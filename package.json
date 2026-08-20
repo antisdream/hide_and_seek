@@ -13,6 +13,7 @@
     "build:server": "tsc --noEmit",
     "start": "vinext start",
     "start:server": "tsx server/index.ts",
+    "start:container": "node server/start-container.mjs",
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "tsx --test tests/unit/*.test.ts",
     "test:integration": "tsx --test tests/integration/*.test.ts",
