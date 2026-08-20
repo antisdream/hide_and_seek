@@ -16,13 +16,13 @@ test("같은 시드는 같은 맵을 만들고 시드는 공개 레이아웃에 
   assert.ok(first.staticProps.length >= 56);
 });
 
-test("세 라운드는 서로 다른 대형 맵과 유효한 양방향 포탈을 사용한다", () => {
+test("세 라운드는 서로 다른 밀집형 맵과 유효한 양방향 포탈을 사용한다", () => {
   const maps = [1, 2, 3].map((round) => createMapForRound(91, round));
   assert.equal(MAP_CATALOG.length, 3);
   assert.equal(new Set(maps.map((map) => map.layout.id)).size, 3);
   for (const generated of maps) {
-    assert.ok(generated.layout.width >= 34);
-    assert.ok(generated.layout.height >= 22);
+    assert.ok(generated.layout.width >= 32 && generated.layout.width <= 36);
+    assert.ok(generated.layout.height >= 21 && generated.layout.height <= 23);
     assert.ok(generated.layout.obstacles.length >= 10);
     assert.ok(generated.staticProps.length >= 56);
     assert.ok(generated.layout.portals.length >= 4);

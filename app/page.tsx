@@ -30,7 +30,7 @@ export default function Home() {
 
       <section className="hero" id="top">
         <div className="hero-copy">
-          <p className="eyebrow">4~10명 · 설치 없음 · 한 판 약 10분</p>
+          <p className="eyebrow">4~10명 · 설치 없음 · 3라운드 약 9~14분</p>
           <h1>가장 평범한 것이<br /><em>가장 수상하다.</em></h1>
           <p className="hero-description">
             잡화점 물건으로 숨어 시각 미션을 수행하거나, 진열대의 작은
@@ -41,6 +41,7 @@ export default function Home() {
             <a className="secondary-button" href="/game">빠른 매칭</a>
           </div>
           <p className="helper-copy">회원가입·설치·음성채팅 없이 바로 플레이</p>
+          <a className="hero-guide-link" href="/how-to-play">실제 게임 화면으로 역할과 조작 먼저 보기 →</a>
         </div>
 
         <div className="game-preview" aria-label="한밤의 문구점 게임 화면 미리보기">
@@ -101,7 +102,7 @@ export default function Home() {
       </section>
 
       <section className="landing-cta">
-        <div><small>한 판 약 10분</small><h2>별명 하나면 준비 끝.</h2><p>혼자 연습한 뒤 친구를 부르거나, 바로 공개방에 합류하세요.</p></div>
+        <div><small>4인 9분 · 10인 최대 13분 30초</small><h2>별명 하나면 준비 끝.</h2><p>실제 화면 안내를 본 뒤 혼자 연습하거나, 친구와 공개방에 합류하세요.</p></div>
         <a className="primary-button" href="/game">잡화점 입장하기</a>
       </section>
 

@@ -28,8 +28,16 @@ test("4개 실제 소켓이 기준 맵 비공개·포탈 이동과 전체 라운
     }
 
     assert.equal(new Set(rooms.map((room) => room.roomId)).size, 1);
+    const roleRevealSnapshots = rooms.map((room) => waitForSnapshot(room, (state) => state.phase === "COUNTDOWN"));
     const hidingSnapshots = rooms.map((room) => waitForSnapshot(room, (state) => state.phase === "HIDING"));
     for (const room of rooms) room.send("ready", true);
+    const roleReveals = await Promise.all(roleRevealSnapshots);
+    assert.equal(roleReveals.filter((state) => state.self.role === "SEEKER").length, 1);
+    assert.equal(roleReveals.filter((state) => state.self.role === "HIDER").length, 3);
+    assert.equal(roleReveals.every((state) => state.entities.every((entity) => !entity.controlled && !entity.teammate)), true);
+    assert.equal(roleReveals.every((state) => state.roundPlayerCount === 4), true);
+    assert.equal(roleReveals.every((state) => state.seekingDurationMs === 700), true);
+    assert.equal(roleReveals.every((state) => state.roundDurationMs === 5_940), true);
     const snapshots = await Promise.all(hidingSnapshots);
 
     const seekerSnapshot = snapshots.find((state) => state.self.role === "SEEKER");

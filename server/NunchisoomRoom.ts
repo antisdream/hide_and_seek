@@ -6,6 +6,7 @@ import { distance, hasLineOfSight, isBlocked } from "../shared/geometry";
 import {
   DEFAULT_RULES,
   normalizeMove,
+  roundTimingFor,
   selectSeekers,
   tagCooldown,
 } from "../shared/game-rules";
@@ -134,6 +135,8 @@ export class NunchisoomRoom extends Room {
   private phase: GamePhase = "LOBBY";
   private phaseEndsAt = 0;
   private round = 0;
+  private roundPlayerCount = 0;
+  private roundSeekingMs = DEFAULT_RULES.seekingMs;
   private version = 0;
   private hostPlayerId = "";
   private rules: GameRules = DEFAULT_RULES;
@@ -261,6 +264,7 @@ export class NunchisoomRoom extends Room {
     this.version += 1;
 
     if (this.phase === "COUNTDOWN" && !this.hasEnoughPlayers()) {
+      this.cancelPreparedRound();
       this.setPhase("LOBBY", 0);
       this.broadcast("notice", { label: "인원이 부족해 시작 준비를 취소했습니다." });
     }
@@ -287,6 +291,7 @@ export class NunchisoomRoom extends Room {
     if (!this.phaseEndsAt || now < this.phaseEndsAt) return;
     if (this.phase === "COUNTDOWN") {
       if (!this.hasEnoughPlayers()) {
+        this.cancelPreparedRound();
         this.setPhase("LOBBY", 0);
         return;
       }
@@ -294,7 +299,7 @@ export class NunchisoomRoom extends Room {
       return;
     }
     if (this.phase === "HIDING") {
-      this.setPhase("SEEKING", now + this.rules.seekingMs);
+      this.setPhase("SEEKING", now + this.roundSeekingMs);
       this.broadcastEffect({ type: "phase", label: `${this.generatedMap.layout.name} 수색이 시작됐습니다.` });
       return;
     }
@@ -346,13 +351,14 @@ export class NunchisoomRoom extends Room {
       for (const player of this.players.values()) player.score = 0;
     }
     this.result = undefined;
+    this.prepareRound();
     this.setPhase("COUNTDOWN", Date.now() + this.rules.countdownMs);
-    this.broadcastEffect({ type: "phase", label: "역할표를 섞고 있습니다." });
+    this.broadcastEffect({ type: "phase", label: `${this.round}라운드 역할이 정해졌습니다.` });
   }
 
-  private startRound(now: number): void {
+  /** 역할 공개 전에 맵과 역할을 확정하되, 다른 이용자의 위치는 스냅샷에서 숨긴다. */
+  private prepareRound(): void {
     this.round += 1;
-    if (!this.matchStartedAt) this.matchStartedAt = now;
     // Node와 Workers 타입을 함께 사용할 때 Buffer 전용 메서드에 의존하지 않도록 바이트로 시드를 조합한다.
     const seedBytes = randomBytes(4);
     const seed = (
@@ -367,6 +373,9 @@ export class NunchisoomRoom extends Room {
     this.result = undefined;
 
     const players = [...this.players.values()];
+    const timing = roundTimingFor(players.length, this.rules);
+    this.roundPlayerCount = timing.playerCount;
+    this.roundSeekingMs = timing.seekingMs;
     const seekerIds = this.mode === "practice"
       ? new Set(this.humanPlayers().slice(0, 1).map((player) => player.id))
       : selectSeekers(players.map((player) => player.id), this.seekerHistory, seed + this.round);
@@ -410,12 +419,35 @@ export class NunchisoomRoom extends Room {
         player.botTarget = this.generatedMap.hiderSpawns[(hiderIndex + index * 2) % this.generatedMap.hiderSpawns.length];
       }
     }
+  }
 
+  private startRound(now: number): void {
+    if (!this.matchStartedAt) this.matchStartedAt = now;
     this.setPhase("HIDING", now + this.rules.hidingMs);
     this.broadcastEffect({
       type: "phase",
       label: `${this.round}라운드 · ${this.generatedMap.layout.name} 숨기 시작`,
     });
+  }
+
+  /** 인원 이탈로 역할 공개가 취소되면 라운드와 역할 이력을 원래 상태로 되돌린다. */
+  private cancelPreparedRound(): void {
+    if (this.round <= 0) return;
+    for (const player of this.players.values()) {
+      if (player.role === "SEEKER") {
+        const previous = this.seekerHistory.get(player.id) ?? 0;
+        if (previous <= 1) this.seekerHistory.delete(player.id);
+        else this.seekerHistory.set(player.id, previous - 1);
+      }
+      player.role = "SPECTATOR";
+      player.inputX = 0;
+      player.inputY = 0;
+      player.locked = false;
+    }
+    this.round = Math.max(0, this.round - 1);
+    this.roundPlayerCount = 0;
+    this.roundSeekingMs = this.rules.seekingMs;
+    this.result = undefined;
   }
 
   private finishRound(reason: RoundResult["reason"], now: number): void {
@@ -721,6 +753,7 @@ export class NunchisoomRoom extends Room {
     const now = Date.now();
     const revealRoles = this.phase === "RESULT" || this.phase === "FINAL";
     const seekerPreview = viewer.role === "SEEKER" && this.phase === "HIDING";
+    const roleReveal = this.phase === "COUNTDOWN";
     const players: PublicPlayer[] = [...this.players.values()]
       .sort((a, b) => a.joinedAt - b.joinedAt)
       .map((player) => ({
@@ -736,7 +769,7 @@ export class NunchisoomRoom extends Room {
         ...(revealRoles ? { revealedRole: player.role } : {}),
       }));
 
-    const visibleProps = seekerPreview ? this.baselineProps : this.staticProps;
+    const visibleProps = seekerPreview || roleReveal ? this.baselineProps : this.staticProps;
     const entities: WorldEntity[] = visibleProps.map((prop) => ({
       id: prop.id,
       category: "prop",
@@ -749,7 +782,7 @@ export class NunchisoomRoom extends Room {
       teammate: false,
       caught: false,
     }));
-    for (const player of this.players.values()) {
+    for (const player of roleReveal ? [] : this.players.values()) {
       if (player.role === "HIDER" && !player.caught && !seekerPreview) {
         entities.push({
           id: player.entityId,
@@ -790,6 +823,7 @@ export class NunchisoomRoom extends Room {
           completed: viewer.mission.completed,
         }
       : undefined;
+    const timing = roundTimingFor(this.roundPlayerCount || this.players.size, this.rules);
     const snapshot: GameSnapshot = {
       version: this.version,
       serverTime: now,
@@ -799,6 +833,9 @@ export class NunchisoomRoom extends Room {
       phaseEndsAt: this.phaseEndsAt,
       round: this.round,
       totalRounds: this.rules.totalRounds,
+      roundPlayerCount: timing.playerCount,
+      roundDurationMs: timing.totalMs,
+      seekingDurationMs: timing.seekingMs,
       minPlayers: this.publicMinPlayers(),
       maxPlayers: this.mode === "practice" ? 4 : this.maxClients,
       canStart:

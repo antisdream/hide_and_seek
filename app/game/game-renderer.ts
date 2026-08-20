@@ -128,7 +128,8 @@ export async function mountGameRenderer(
         this.redrawTransients();
       }
 
-      const blend = 1 - Math.exp(-delta / 55);
+      // 빠른 관찰자가 화면에서 뒤늦게 끌려오는 느낌이 없도록 표시 지연만 줄인다.
+      const blend = 1 - Math.exp(-delta / 45);
       for (const view of this.entityViews.values()) {
         const gap = Math.hypot(view.targetX - view.container.x, view.targetY - view.container.y);
         if (gap > TILE * 4) {
@@ -225,7 +226,10 @@ export async function mountGameRenderer(
         root.add(structure);
       }
 
-      for (const portal of snapshot.map.portals ?? []) root.add(this.drawPortal(portal, palette.portal));
+      for (const portal of snapshot.map.portals ?? []) {
+        const target = snapshot.map.portals.find((candidate) => candidate.id === portal.targetId);
+        root.add(this.drawPortal(portal, target?.label, palette.portal));
+      }
 
       const worldWidth = snapshot.map.width * TILE;
       const worldHeight = snapshot.map.height * TILE;
@@ -426,6 +430,7 @@ export async function mountGameRenderer(
 
     private drawPortal(
       portal: GameSnapshot["map"]["portals"][number],
+      targetLabel: string | undefined,
       color: number,
     ): Phaser.GameObjects.Container {
       const container = this.add.container(portal.x * TILE, portal.y * TILE);
@@ -436,7 +441,7 @@ export async function mountGameRenderer(
       gate.strokeCircle(0, 0, portal.radius * TILE);
       gate.lineStyle(2, 0xffffff, 0.7);
       gate.strokeCircle(0, 0, portal.radius * TILE - 9);
-      const label = this.add.text(0, -portal.radius * TILE - 10, portal.label, {
+      const label = this.add.text(0, -portal.radius * TILE - 10, `${portal.label} → ${targetLabel ?? "연결 구역"}`, {
         color: "#ffffff",
         backgroundColor: "#25213add",
         fontFamily: "Pretendard, sans-serif",

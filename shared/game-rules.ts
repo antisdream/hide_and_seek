@@ -5,12 +5,13 @@ export const DEFAULT_RULES: GameRules = {
   minPlayers: 4,
   maxPlayers: 10,
   totalRounds: 3,
-  countdownMs: 3_000,
-  hidingMs: 18_000,
-  seekingMs: 55_000,
-  resultMs: 8_000,
+  countdownMs: 10_000,
+  hidingMs: 35_000,
+  seekingMs: 125_000,
+  seekingMsPerExtraPlayer: 15_000,
+  resultMs: 10_000,
   hiderSpeed: 5,
-  seekerSpeed: 6.5,
+  seekerSpeed: 7.8,
   tagDistance: 2.6,
   tagCooldownMs: 1_200,
   wrongTagCooldownMs: 3_000,
@@ -30,10 +31,39 @@ export const FAST_TEST_RULES: GameRules = {
   countdownMs: 120,
   hidingMs: 180,
   seekingMs: 700,
+  seekingMsPerExtraPlayer: 0,
   resultMs: 120,
   lensCooldownMs: 200,
   missionHoldMs: 100,
 };
+
+export interface RoundTiming {
+  playerCount: number;
+  countdownMs: number;
+  hidingMs: number;
+  seekingMs: number;
+  resultMs: number;
+  totalMs: number;
+}
+
+/**
+ * 4인 기본 라운드에 참가자 한 명당 수색 시간 15초를 더한다.
+ * 숨기기는 동시에 진행되므로 인원이 늘어도 준비 시간은 늘리지 않는다.
+ */
+export function roundTimingFor(playerCount: number, rules: GameRules = DEFAULT_RULES): RoundTiming {
+  const safeCount = Number.isFinite(playerCount) ? Math.trunc(playerCount) : rules.minPlayers;
+  const normalizedCount = Math.max(rules.minPlayers, Math.min(rules.maxPlayers, safeCount));
+  const extraPlayers = Math.max(0, normalizedCount - rules.minPlayers);
+  const seekingMs = rules.seekingMs + extraPlayers * rules.seekingMsPerExtraPlayer;
+  return {
+    playerCount: normalizedCount,
+    countdownMs: rules.countdownMs,
+    hidingMs: rules.hidingMs,
+    seekingMs,
+    resultMs: rules.resultMs,
+    totalMs: rules.countdownMs + rules.hidingMs + seekingMs + rules.resultMs,
+  };
+}
 
 export function seekerCountFor(playerCount: number): number {
   if (playerCount <= 5) return 1;

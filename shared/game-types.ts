@@ -58,6 +58,7 @@ export interface GameRules {
   countdownMs: number;
   hidingMs: number;
   seekingMs: number;
+  seekingMsPerExtraPlayer: number;
   resultMs: number;
   hiderSpeed: number;
   seekerSpeed: number;
@@ -139,6 +140,9 @@ export interface GameSnapshot {
   phaseEndsAt: number;
   round: number;
   totalRounds: number;
+  roundPlayerCount: number;
+  roundDurationMs: number;
+  seekingDurationMs: number;
   minPlayers: number;
   maxPlayers: number;
   canStart: boolean;

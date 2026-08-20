@@ -35,6 +35,7 @@ export default function GameClient() {
   const [room, setRoom] = useState<Room>();
   const [snapshot, setSnapshot] = useState<GameSnapshot>();
   const [notice, setNotice] = useState<Notice>();
+  const [coachOpen, setCoachOpen] = useState(false);
   const [clockNow, setClockNow] = useState(() => Date.now());
   const [serverOffset, setServerOffset] = useState(0);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -43,6 +44,7 @@ export default function GameClient() {
   const sequenceRef = useRef(0);
   const pressedKeysRef = useRef(new Set<string>());
   const snapshotRef = useRef<GameSnapshot | undefined>(undefined);
+  const previousPhaseRef = useRef<GamePhase | undefined>(undefined);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -86,6 +88,25 @@ export default function GameClient() {
   useEffect(() => {
     snapshotRef.current = snapshot;
     if (snapshot) rendererRef.current?.pushSnapshot(snapshot);
+  }, [snapshot]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (!snapshot) {
+        previousPhaseRef.current = undefined;
+        setCoachOpen(false);
+        return;
+      }
+      const role = snapshot.self.role;
+      const enteredHiding = previousPhaseRef.current !== "HIDING" && snapshot.phase === "HIDING";
+      if (enteredHiding && (role === "HIDER" || role === "SEEKER")) {
+        const seen = window.localStorage.getItem(`nunchisoom-guide-seen-${role}`) === "1";
+        if (!seen) setCoachOpen(true);
+      }
+      if (snapshot.phase === "LOBBY" || snapshot.phase === "FINAL") setCoachOpen(false);
+      previousPhaseRef.current = snapshot.phase;
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [snapshot]);
 
   useEffect(() => {
@@ -244,6 +265,13 @@ export default function GameClient() {
 
   const serverNow = clockNow + serverOffset;
   const finalChase = isFinalChase(snapshot, serverNow);
+  const dismissCoach = () => {
+    const role = snapshot?.self.role;
+    if (role === "HIDER" || role === "SEEKER") {
+      window.localStorage.setItem(`nunchisoom-guide-seen-${role}`, "1");
+    }
+    setCoachOpen(false);
+  };
 
   if (!room) {
     return (
@@ -260,6 +288,15 @@ export default function GameClient() {
             <p className="eyebrow">소리가 없어도 단서는 선명하게</p>
             <h1>오늘 밤,<br /><em>잡화점의 눈치왕</em>은 누구?</h1>
             <p>설치 없이 별명만 정하면 바로 시작합니다. 공개방은 무작위 친구와, 초대방은 링크를 받은 지인과 만나요.</p>
+            <div className="join-quick-guide">
+              <strong>처음이라면 이것만 기억하세요</strong>
+              <ol>
+                <li>역할표에서 내가 숨는 팀인지 찾는 팀인지 확인합니다.</li>
+                <li>틈새정령은 사물처럼 멈추고, 관찰자는 숨기 전 기준 배치를 기억합니다.</li>
+                <li>문과 포탈은 연결된 다른 구역으로 바로 이동합니다.</li>
+              </ol>
+              <a href="/how-to-play">실제 게임 화면으로 차근차근 배우기</a>
+            </div>
             <CharacterParade />
           </div>
 
@@ -339,6 +376,9 @@ export default function GameClient() {
           <time>{formatRemaining(snapshot, serverNow)}</time>
         </div>
         <div className="room-tools">
+          <button type="button" onClick={() => setCoachOpen(true)} disabled={!snapshot || snapshot.self.role === "SPECTATOR"}>
+            역할 도움말
+          </button>
           <button type="button" onClick={() => void copyInvite()} title="초대 링크 복사">
             방 {shortRoomId(room.roomId)} <span>복사</span>
           </button>
@@ -353,7 +393,7 @@ export default function GameClient() {
             {snapshot?.players.map((player) => (
               <article className={`player-row avatar-${player.avatar}`} key={player.id}>
                 <span className="avatar-face" aria-hidden="true"><i /><i /><b /></span>
-                <div><strong>{player.displayName}{player.bot ? " · 봇" : ""}</strong><small>{player.host ? "방장 · " : ""}{playerStatusLabel(player.status, player.ready)}</small></div>
+                <div><strong>{player.displayName}{player.bot ? " · 봇" : ""}</strong><small>{player.host ? "방장 · " : ""}{playerStatusLabel(player.status, player.ready, snapshot.phase)}</small></div>
                 <b>{player.score}</b>
               </article>
             ))}
@@ -373,7 +413,7 @@ export default function GameClient() {
               </div>
             )}
             {status === "reconnecting" && <div className="game-overlay"><strong>다시 연결하는 중…</strong><span>10초 동안 자리를 지켜드려요.</span></div>}
-            {snapshot?.phase === "COUNTDOWN" && <div className="game-overlay compact-overlay"><strong>{formatRemaining(snapshot, serverNow)}</strong><span>역할표를 확인하세요</span></div>}
+            {snapshot?.phase === "COUNTDOWN" && <RoleRevealOverlay snapshot={snapshot} serverNow={serverNow} />}
             {snapshot?.seekerPreview && (
               <div className="preview-ribbon">
                 <span aria-hidden="true">◎</span>
@@ -383,6 +423,9 @@ export default function GameClient() {
             {finalChase && <div className="final-chase-ribbon"><span aria-hidden="true">!</span><strong>마지막 15초</strong><small>시간이 끝나기 전에 남은 틈새정령을 찾으세요</small></div>}
             {snapshot?.result && <ResultOverlay snapshot={snapshot} />}
             {snapshot?.self.caught && snapshot.phase === "SEEKING" && <div className="caught-ribbon">발견됐어요 · 팀 핑으로 계속 도울 수 있어요</div>}
+            {coachOpen && snapshot && (snapshot.phase === "HIDING" || snapshot.phase === "SEEKING") && (
+              <FirstPlayCoach snapshot={snapshot} onClose={dismissCoach} />
+            )}
           </div>
           <div className="visual-feed" aria-live="polite">
             <span className={`connection-dot ${status}`} aria-hidden="true" />
@@ -426,20 +469,29 @@ function RoleCard({ snapshot }: { snapshot?: GameSnapshot }) {
   return (
     <div className={`role-card role-${role.toLowerCase()}`}>
       <span aria-hidden="true">{role === "HIDER" ? "▣" : role === "SEEKER" ? "◎" : "⌛"}</span>
-      <div><small>내 역할</small><strong>{role === "HIDER" ? "틈새정령" : role === "SEEKER" ? "관찰자" : "대기 중"}</strong></div>
+      <div><small>내 역할 · 현재 목표</small><strong>{role === "HIDER" ? "틈새정령" : role === "SEEKER" ? "밤지기 관찰자" : "대기 중"}</strong></div>
       <p>{roleInstruction(snapshot)}</p>
+      {role === "SEEKER" && <em>이동 우위 · 틈새정령보다 약 56% 빠름</em>}
+      {role === "HIDER" && <em>{snapshot?.self.locked ? "◆ 지금은 사물 고정 상태" : "이동하면 짧은 파문이 남아요"}</em>}
     </div>
   );
 }
 
 function ActionButtons({ snapshot, send }: { snapshot?: GameSnapshot; send: (type: string, payload: unknown) => void }) {
   if (!snapshot || snapshot.self.role === "SPECTATOR") return <div className="action-empty">경기가 시작되면 역할 행동이 열려요.</div>;
+  if (snapshot.phase === "COUNTDOWN") return <div className="action-empty">역할 목표를 확인하세요. 숨기·기준 맵 탐색이 시작되면 행동이 열립니다.</div>;
   if (snapshot.self.role === "HIDER") {
     return (
       <div className="action-buttons">
-        <button type="button" onClick={() => send("lock", !snapshot.self.locked)}><span>◆</span><strong>{snapshot.self.locked ? "고정 풀기" : "사물 고정"}</strong><small>움직임을 완전히 멈춰요</small></button>
-        <button type="button" disabled={!snapshot.self.swapAvailable} onClick={() => send("swap", true)}><span>⇄</span><strong>자리바꿈</strong><small>가까운 같은 사물과 1회 교체</small></button>
-        {snapshot.mission && <div className="mission-card"><span>시각 미션</span><strong>{snapshot.mission.label}</strong><progress max={1} value={snapshot.mission.progress}>{Math.round(snapshot.mission.progress * 100)}%</progress></div>}
+        <div className="action-item">
+          <button type="button" onClick={() => send("lock", !snapshot.self.locked)}><span>◆</span><strong>{snapshot.self.locked ? "고정 풀기" : "사물 고정"}</strong><small>움직임을 완전히 멈춰요</small></button>
+          <HelpTooltip label="사물 고정" copy="움직임을 멈춰 파문을 숨깁니다. 이동키를 누르면 자동으로 풀리며, 미션 구역에서는 고정 상태를 2초 유지해야 합니다." />
+        </div>
+        <div className="action-item">
+          <button type="button" disabled={!snapshot.self.swapAvailable} onClick={() => send("swap", true)}><span>⇄</span><strong>자리바꿈</strong><small>가까운 같은 사물과 1회 교체</small></button>
+          <HelpTooltip label="자리바꿈" copy="2.5칸 안의 같은 종류 사물과 위치를 단 한 번 바꿉니다. 관찰자가 가까이 왔을 때 탈출하거나 기준 기억을 흔들 때 사용하세요." />
+        </div>
+        {snapshot.mission && <div className="mission-card action-with-help"><span>시각 미션</span><strong>{snapshot.mission.label}</strong><progress max={1} value={snapshot.mission.progress}>{Math.round(snapshot.mission.progress * 100)}%</progress><HelpTooltip label="진열 미션" copy="표시된 구역 안에서 사물 고정을 2초 유지하면 25점을 받습니다. 생존보다 위험하다고 판단되면 포기해도 됩니다." /></div>}
       </div>
     );
   }
@@ -454,8 +506,14 @@ function ActionButtons({ snapshot, send }: { snapshot?: GameSnapshot; send: (typ
   const tagSeconds = Math.max(0, Math.ceil((snapshot.self.tagReadyAt - snapshot.serverTime) / 100) / 10);
   return (
     <div className="action-buttons">
-      <button type="button" disabled={lensSeconds > 0} onClick={() => send("lens", true)}><span>⌾</span><strong>관찰 렌즈</strong><small>{lensSeconds > 0 ? `${lensSeconds}초 뒤 충전` : "최근 움직임을 구역으로 표시"}</small></button>
-      <div className={tagSeconds > 0 ? "tag-tip cooling" : "tag-tip"}><span aria-hidden="true">☝</span><p><strong>확인 스티커</strong><br />{tagSeconds > 0 ? `${tagSeconds.toFixed(1)}초 뒤 다시 확인` : "가까운 사물을 직접 클릭하세요."}</p></div>
+      <div className="action-item">
+        <button type="button" disabled={lensSeconds > 0} onClick={() => send("lens", true)}><span>⌾</span><strong>관찰 렌즈</strong><small>{lensSeconds > 0 ? `${lensSeconds}초 뒤 충전` : "최근 움직임을 구역으로 표시"}</small></button>
+        <HelpTooltip label="관찰 렌즈" copy="최근 2초 안에 틈새정령이 움직인 넓은 구역만 1.8초간 표시합니다. 정확한 사물은 알려주지 않으며 재사용 대기는 30초입니다." />
+      </div>
+      <div className="action-item tag-action">
+        <div className={tagSeconds > 0 ? "tag-tip cooling" : "tag-tip"}><span aria-hidden="true">☝</span><p><strong>확인 스티커</strong><br />{tagSeconds > 0 ? `${tagSeconds.toFixed(1)}초 뒤 다시 확인` : "가까운 사물을 직접 클릭하세요."}</p></div>
+        <HelpTooltip label="확인 스티커" copy="2.6칸 안에서 선반에 가리지 않은 사물만 확인할 수 있습니다. 오답은 집중력 25와 3초 대기, 집중력 소진은 6.5초 대기가 적용됩니다." />
+      </div>
     </div>
   );
 }
@@ -467,9 +525,57 @@ function TeamPings({ role, send }: { role?: GameSnapshot["self"]["role"]; send: 
     : [["danger", "관찰자 주의"], ["moving", "이동할게요"], ["done", "미션 완료"]];
   return (
     <div className="ping-panel">
-      <span>무음 팀 신호</span>
+      <div className="ping-heading"><span>무음 팀 신호</span><HelpTooltip label="팀 신호" copy="내 현재 위치에 같은 역할만 볼 수 있는 표시를 남깁니다. 음성채팅 없이 의심 구역과 위험을 빠르게 공유하세요." /></div>
       <div>{choices.map(([kind, label]) => <button key={kind} type="button" onClick={() => send("ping", { kind })}>{label}</button>)}</div>
     </div>
+  );
+}
+
+function HelpTooltip({ label, copy }: { label: string; copy: string }) {
+  return (
+    <details className="help-tooltip">
+      <summary aria-label={`${label} 자세히 보기`}>?</summary>
+      <div role="tooltip"><strong>{label}</strong><p>{copy}</p></div>
+    </details>
+  );
+}
+
+function RoleRevealOverlay({ snapshot, serverNow }: { snapshot: GameSnapshot; serverNow: number }) {
+  const seeker = snapshot.self.role === "SEEKER";
+  const roleName = seeker ? "밤지기 관찰자" : "틈새정령";
+  const steps = seeker
+    ? ["숨는 장면 대신 기준 사물 배치를 기억하세요.", "드래그·휠과 이동키로 포탈 도착점까지 확인하세요.", "수색이 열리면 가까운 수상한 사물을 클릭하세요."]
+    : ["주변과 자연스럽게 어울리는 자리를 찾으세요.", "자리를 정하면 ‘사물 고정’으로 파문을 숨기세요.", "수색 중에는 자리바꿈과 포탈을 탈출에 활용하세요."];
+  return (
+    <div className={`game-overlay role-reveal-overlay ${seeker ? "reveal-seeker" : "reveal-hider"}`} role="dialog" aria-label={`${roleName} 역할 안내`}>
+      <span className="role-reveal-symbol" aria-hidden="true">{seeker ? "◎" : "▣"}</span>
+      <p className="role-reveal-kicker">{snapshot.round}라운드 역할 확정</p>
+      <strong>당신은 <em>{roleName}</em>입니다</strong>
+      <p className="role-reveal-goal">{seeker ? "제한시간 안에 모든 틈새정령을 찾아내세요." : "평범한 사물처럼 숨어 수색 종료까지 살아남으세요."}</p>
+      <ol>{steps.map((step) => <li key={step}>{step}</li>)}</ol>
+      <div className="role-reveal-footer"><time>{formatRemaining(snapshot, serverNow)}</time><span>{formatDurationLabel(snapshot.roundDurationMs)} 라운드 · 곧 {seeker ? "기준 맵 탐색" : "숨기"} 시작</span></div>
+    </div>
+  );
+}
+
+function FirstPlayCoach({ snapshot, onClose }: { snapshot: GameSnapshot; onClose: () => void }) {
+  const seeker = snapshot.self.role === "SEEKER";
+  const preview = seeker && snapshot.phase === "HIDING";
+  const title = preview ? "먼저 기준 맵을 기억하세요" : seeker ? "이제 차이를 찾아보세요" : snapshot.phase === "HIDING" ? "지금은 숨을 자리부터 찾으세요" : "움직일 때를 신중히 고르세요";
+  const steps = preview
+    ? ["마우스로 맵을 끌고 휠로 확대합니다.", "WASD로 포탈을 통과해 연결 구역을 봅니다.", "중복되거나 어색한 사물 수를 기억합니다."]
+    : seeker
+      ? ["기억한 배치와 다른 사물을 찾습니다.", "2.6칸 안까지 다가간 뒤 사물을 클릭합니다.", "막히면 렌즈로 최근 움직임 구역을 좁힙니다."]
+      : snapshot.phase === "HIDING"
+        ? ["진열된 사물 무리 옆으로 이동합니다.", "자연스러운 방향을 맞춘 뒤 사물 고정을 누릅니다.", "여유가 있으면 표시된 미션 구역을 노립니다."]
+        : ["고정 상태를 유지해 움직임 파문을 감춥니다.", "발각 직전에는 자리바꿈이나 포탈로 빠져나갑니다.", "발견된 뒤에도 팀 신호로 동료를 돕습니다."];
+  return (
+    <aside className={`coach-card ${seeker ? "coach-seeker" : "coach-hider"}`} aria-label="첫 플레이 단계 안내">
+      <div><span>{seeker ? "관찰자 안내" : "틈새정령 안내"}</span><button type="button" onClick={onClose} aria-label="역할 안내 닫기">×</button></div>
+      <strong>{title}</strong>
+      <ol>{steps.map((step) => <li key={step}>{step}</li>)}</ol>
+      <button type="button" className="coach-done" onClick={onClose}>이해했어요</button>
+    </aside>
   );
 }
 
@@ -552,6 +658,13 @@ function formatRemaining(snapshot: GameSnapshot | undefined, serverNow: number):
   return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+function formatDurationLabel(durationMs: number): string {
+  const seconds = Math.round(durationMs / 1_000);
+  const minutes = Math.floor(seconds / 60);
+  const remaining = seconds % 60;
+  return remaining === 0 ? `${minutes}분` : `${minutes}분 ${remaining}초`;
+}
+
 function isFinalChase(snapshot: GameSnapshot | undefined, serverNow: number): boolean {
   if (snapshot?.phase !== "SEEKING") return false;
   const remaining = snapshot.phaseEndsAt - serverNow;
@@ -568,6 +681,9 @@ function phaseLabel(phase?: GamePhase): string {
 
 function roleInstruction(snapshot?: GameSnapshot): string {
   if (!snapshot || snapshot.self.role === "SPECTATOR") return "준비를 마친 뒤 역할표를 기다리세요.";
+  if (snapshot.phase === "COUNTDOWN") return snapshot.self.role === "SEEKER"
+    ? "관찰자입니다. 숨는 장면은 보이지 않으니 기준 배치부터 기억하세요."
+    : "틈새정령입니다. 자연스러운 자리를 찾고 사물처럼 고정하세요.";
   if (snapshot.self.caught) return "발견됐지만 끝이 아니에요. 무음 핑으로 팀을 도우세요.";
   if (snapshot.self.role === "HIDER") return snapshot.phase === "HIDING" ? "사물 사이에 자리를 잡고 고정하세요." : "평범한 척 미션을 노리되 움직임 파문을 조심하세요.";
   return snapshot.phase === "HIDING"
@@ -579,7 +695,8 @@ function modeLabel(mode?: RoomMode): string {
   return mode === "public" ? "빠른 매칭" : mode === "practice" ? "연습방" : "친구 초대방";
 }
 
-function playerStatusLabel(status: GameSnapshot["players"][number]["status"], ready: boolean): string {
+function playerStatusLabel(status: GameSnapshot["players"][number]["status"], ready: boolean, phase: GamePhase): string {
+  if (phase === "COUNTDOWN") return "역할 확인 중";
   if (status === "caught") return "발견됨 · 응원 중";
   if (status === "playing") return "게임 중";
   if (status === "waiting") return "재연결 대기";
