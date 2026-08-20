@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { Room, ServerError, type AuthContext, type Client } from "@colyseus/core";
 import { z } from "zod";
+import { isAllowedRequestOrigin, SAME_HOST_ORIGIN } from "./origin-policy";
 import { distance, hasLineOfSight, isBlocked } from "../shared/geometry";
 import {
   DEFAULT_RULES,
@@ -110,7 +111,7 @@ export interface RuntimeConfig {
 
 const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   rules: DEFAULT_RULES,
-  allowedOrigins: ["http://localhost:3000", "http://127.0.0.1:3000"],
+  allowedOrigins: [SAME_HOST_ORIGIN],
 };
 
 /** 서버 인스턴스마다 규칙과 저장소를 격리한 방 클래스를 만든다. */
@@ -174,7 +175,8 @@ export class NunchisoomRoom extends Room {
     if (!parsed.success) return false;
 
     const origin = context.headers.get("origin");
-    if (origin && this.runtimeConfig.allowedOrigins.length > 0 && !this.runtimeConfig.allowedOrigins.includes(origin)) {
+    const requestHost = context.headers.get("host");
+    if (!isAllowedRequestOrigin(origin, requestHost, this.runtimeConfig.allowedOrigins)) {
       return false;
     }
 

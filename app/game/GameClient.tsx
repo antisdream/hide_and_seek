@@ -11,7 +11,9 @@ import type {
   RoomMode,
   TeamPing,
 } from "../../shared/game-types";
+import { copyTextToClipboard, createClientId } from "../../shared/client-runtime";
 import { normalizeInviteCode } from "../../shared/invite-code";
+import { createInviteUrl, resolveGameServerEndpoint } from "../../shared/network-url";
 import { mountGameRenderer, type GameRenderer, type LensPulse } from "./game-renderer";
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "reconnecting" | "closed";
@@ -23,7 +25,7 @@ interface Notice {
   tone?: "normal" | "error" | "success";
 }
 
-const GAME_ENDPOINT = process.env.NEXT_PUBLIC_GAME_SERVER_URL ?? "http://127.0.0.1:2567";
+const CONFIGURED_GAME_ENDPOINT = process.env.NEXT_PUBLIC_GAME_SERVER_URL;
 
 export default function GameClient() {
   const [displayName, setDisplayName] = useState("");
@@ -127,20 +129,21 @@ export default function GameClient() {
     if (status === "connecting") return;
     const normalizedRoomId = requestedRoomId ? normalizeInviteCode(requestedRoomId) : undefined;
     if (requestedRoomId && !normalizedRoomId) {
-      setNotice({ id: crypto.randomUUID(), title: "초대 코드 확인", label: "올바른 초대 코드 또는 초대 링크를 입력해 주세요.", tone: "error" });
+      setNotice({ id: createClientId(), title: "초대 코드 확인", label: "올바른 초대 코드 또는 초대 링크를 입력해 주세요.", tone: "error" });
       return;
     }
     const normalizedName = displayName.normalize("NFKC").trim().slice(0, 12);
     if (!normalizedName) {
-      setNotice({ id: crypto.randomUUID(), title: "별명 확인", label: "1~12자의 별명을 입력해 주세요.", tone: "error" });
+      setNotice({ id: createClientId(), title: "별명 확인", label: "1~12자의 별명을 입력해 주세요.", tone: "error" });
       return;
     }
 
     setStatus("connecting");
-    setNotice({ id: crypto.randomUUID(), label: "잡화점 문을 여는 중입니다…" });
+    setNotice({ id: createClientId(), label: "잡화점 문을 여는 중입니다…" });
     window.localStorage.setItem("nunchisoom-display-name", normalizedName);
     try {
-      const client = new ColyseusSDK(GAME_ENDPOINT);
+      const gameEndpoint = resolveGameServerEndpoint(window.location.href, CONFIGURED_GAME_ENDPOINT);
+      const client = new ColyseusSDK(gameEndpoint);
       const options = {
         displayName: normalizedName,
         deviceId: getDeviceId(),
@@ -166,15 +169,15 @@ export default function GameClient() {
         setNotice({ ...error, tone: "error" });
       });
       joinedRoom.onMessage<{ label: string }>("notice", (message) => {
-        setNotice({ id: crypto.randomUUID(), label: message.label });
+        setNotice({ id: createClientId(), label: message.label });
       });
       joinedRoom.onDrop(() => setStatus("reconnecting"));
       joinedRoom.onReconnect(() => {
         setStatus("connected");
-        setNotice({ id: crypto.randomUUID(), label: "게임방에 다시 연결했습니다.", tone: "success" });
+        setNotice({ id: createClientId(), label: "게임방에 다시 연결했습니다.", tone: "success" });
       });
       joinedRoom.onError((_code, message) => {
-        setNotice({ id: crypto.randomUUID(), title: "연결 오류", label: message || "게임 서버 연결을 확인해 주세요.", tone: "error" });
+        setNotice({ id: createClientId(), title: "연결 오류", label: message || "게임 서버 연결을 확인해 주세요.", tone: "error" });
       });
       joinedRoom.onLeave(() => {
         if (roomRef.current === joinedRoom) {
@@ -188,7 +191,7 @@ export default function GameClient() {
       roomRef.current = joinedRoom;
       setRoom(joinedRoom);
       setStatus("connected");
-      setNotice({ id: crypto.randomUUID(), label: "잡화점에 입장했습니다.", tone: "success" });
+      setNotice({ id: createClientId(), label: "잡화점에 입장했습니다.", tone: "success" });
       sequenceRef.current = 0;
 
       if (mode !== "public" && !normalizedRoomId) {
@@ -201,7 +204,7 @@ export default function GameClient() {
     } catch (error: unknown) {
       setStatus("idle");
       setNotice({
-        id: crypto.randomUUID(),
+        id: createClientId(),
         title: "입장하지 못했습니다",
         label: readableError(error),
         tone: "error",
@@ -227,14 +230,11 @@ export default function GameClient() {
 
   const copyInvite = useCallback(async () => {
     if (!room) return;
-    const url = new URL("/game", window.location.origin);
-    url.searchParams.set("room", room.roomId);
-    try {
-      await navigator.clipboard.writeText(url.toString());
-      setNotice({ id: crypto.randomUUID(), label: "초대 링크를 복사했습니다.", tone: "success" });
-    } catch {
-      setNotice({ id: crypto.randomUUID(), label: `초대 코드: ${room.roomId}`, tone: "normal" });
-    }
+    const inviteUrl = createInviteUrl(window.location.href, room.roomId);
+    const copied = await copyTextToClipboard(inviteUrl);
+    setNotice(copied
+      ? { id: createClientId(), label: "초대 링크를 복사했습니다.", tone: "success" }
+      : { id: createClientId(), label: `초대 링크를 직접 복사하세요: ${inviteUrl}`, tone: "normal" });
   }, [room]);
 
   const setTouchKey = useCallback((key: string, active: boolean) => {
@@ -249,7 +249,7 @@ export default function GameClient() {
     return (
       <main className="join-page">
         <header className="game-topbar">
-          <Link className="brand" href="/" aria-label="눈치숨 홈">
+          <Link className="brand" href="/" prefetch={false} aria-label="눈치숨 홈">
             <span className="brand-mark" aria-hidden="true">눈</span><span>눈치숨</span>
           </Link>
           <a className="text-link" href="/how-to-play">게임 방법</a>
@@ -330,7 +330,7 @@ export default function GameClient() {
   return (
     <main className="play-page">
       <header className="play-header">
-        <Link className="brand compact" href="/" aria-label="눈치숨 홈">
+        <Link className="brand compact" href="/" prefetch={false} aria-label="눈치숨 홈">
           <span className="brand-mark" aria-hidden="true">눈</span><span>눈치숨</span>
         </Link>
         <div className={finalChase ? "phase-summary urgent" : "phase-summary"} aria-live="polite">
@@ -519,7 +519,7 @@ function getDeviceId(): string {
   const key = "nunchisoom-device-id";
   const current = window.localStorage.getItem(key);
   if (current) return current;
-  const created = crypto.randomUUID();
+  const created = createClientId();
   window.localStorage.setItem(key, created);
   return created;
 }

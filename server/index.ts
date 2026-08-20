@@ -4,6 +4,7 @@ import { WebSocketTransport } from "@colyseus/ws-transport";
 import { DEFAULT_RULES, FAST_TEST_RULES } from "../shared/game-rules";
 import type { GameRules } from "../shared/game-types";
 import { createConfiguredNunchisoomRoom } from "./NunchisoomRoom";
+import { isAllowedRequestOrigin, SAME_HOST_ORIGIN } from "./origin-policy";
 import { SqliteMatchStore, type MatchStore } from "./persistence";
 
 // 로컬 개발에서는 서버도 웹과 같은 `.env.local` 설정을 읽는다.
@@ -52,7 +53,13 @@ export function createNunchisoomServer(options: NunchisoomServerOptions = {}): N
     express: (app) => {
       app.use((request, response, next) => {
         const origin = request.headers.origin;
-        if (origin && allowedOrigins.includes(origin)) {
+        if (origin) {
+          if (!isAllowedRequestOrigin(origin, request.headers.host, allowedOrigins)) {
+            response.removeHeader("Access-Control-Allow-Origin");
+            response.removeHeader("Access-Control-Allow-Credentials");
+            response.status(403).json({ error: "origin_not_allowed" });
+            return;
+          }
           response.header("Access-Control-Allow-Origin", origin);
           response.header("Vary", "Origin");
         }
@@ -109,7 +116,7 @@ function parseAllowedOrigins(): string[] {
     .filter(Boolean);
   return configured?.length
     ? configured
-    : ["http://localhost:3000", "http://127.0.0.1:3000"];
+    : [SAME_HOST_ORIGIN];
 }
 
 async function startStandaloneServer(): Promise<void> {

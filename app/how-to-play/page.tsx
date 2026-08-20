@@ -8,8 +8,8 @@ export const metadata: Metadata = {
 
 const phases = [
   { number: "01", title: "준비", copy: "별명을 정하고 친구방·공개방·연습방 중 하나에 입장해 준비를 누릅니다." },
-  { number: "02", title: "숨기·기억 25초", copy: "틈새정령은 사물로 숨고, 관찰자는 숨는 장면 없이 기준 맵과 기본 사물·포탈을 직접 둘러봅니다." },
-  { number: "03", title: "수색 65초", copy: "관찰자는 수상한 사물에 가까이 가 확인 스티커를 붙이고, 틈새정령은 미션을 노립니다." },
+  { number: "02", title: "숨기·기억 18초", copy: "틈새정령은 사물로 숨고, 관찰자는 숨는 장면 없이 기준 맵과 기본 사물·포탈을 직접 둘러봅니다." },
+  { number: "03", title: "수색 55초", copy: "관찰자는 수상한 사물에 가까이 가 확인 스티커를 붙이고, 틈새정령은 미션을 노립니다." },
   { number: "04", title: "결과와 순환", copy: "주요 장면을 함께 보고 다음 라운드에 역할을 다시 공정하게 나눕니다." },
 ];
 
@@ -17,7 +17,7 @@ export default function HowToPlayPage() {
   return (
     <main className="guide-page">
       <nav className="topbar">
-        <Link className="brand" href="/" aria-label="눈치숨 홈"><span className="brand-mark" aria-hidden="true">눈</span><span>눈치숨</span></Link>
+        <Link className="brand" href="/" prefetch={false} aria-label="눈치숨 홈"><span className="brand-mark" aria-hidden="true">눈</span><span>눈치숨</span></Link>
         <a className="primary-button small-button" href="/game">게임 시작</a>
       </nav>
 
