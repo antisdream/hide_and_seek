@@ -26,6 +26,7 @@ interface Notice {
 }
 
 const CONFIGURED_GAME_ENDPOINT = process.env.NEXT_PUBLIC_GAME_SERVER_URL;
+const MOVE_SEND_INTERVAL_MS = 1_000 / 30;
 
 export default function GameClient() {
   const [displayName, setDisplayName] = useState("");
@@ -45,6 +46,13 @@ export default function GameClient() {
   const pressedKeysRef = useRef(new Set<string>());
   const snapshotRef = useRef<GameSnapshot | undefined>(undefined);
   const previousPhaseRef = useRef<GamePhase | undefined>(undefined);
+
+  const sendMovementNow = useCallback(() => {
+    const activeRoom = roomRef.current;
+    if (!activeRoom) return;
+    const direction = movementFromKeys(pressedKeysRef.current);
+    activeRoom.send("move", { seq: nextSequence(sequenceRef), ...direction });
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -116,29 +124,37 @@ export default function GameClient() {
       const key = movementKey(event.key);
       if (!key) return;
       event.preventDefault();
+      if (pressedKeys.has(key)) return;
       pressedKeys.add(key);
+      sendMovementNow();
     };
     const keyUp = (event: KeyboardEvent) => {
       const key = movementKey(event.key);
       if (!key) return;
       event.preventDefault();
-      pressedKeys.delete(key);
+      if (pressedKeys.delete(key)) sendMovementNow();
+    };
+    const releaseKeys = () => {
+      if (pressedKeys.size === 0) return;
+      pressedKeys.clear();
+      sendMovementNow();
     };
     window.addEventListener("keydown", keyDown);
     window.addEventListener("keyup", keyUp);
+    window.addEventListener("blur", releaseKeys);
 
     const sender = window.setInterval(() => {
-      const direction = movementFromKeys(pressedKeys);
-      room.send("move", { seq: nextSequence(sequenceRef), ...direction });
-    }, 50);
+      sendMovementNow();
+    }, MOVE_SEND_INTERVAL_MS);
 
     return () => {
       window.clearInterval(sender);
       window.removeEventListener("keydown", keyDown);
       window.removeEventListener("keyup", keyUp);
+      window.removeEventListener("blur", releaseKeys);
       pressedKeys.clear();
     };
-  }, [room]);
+  }, [room, sendMovementNow]);
 
   useEffect(() => () => {
     const activeRoom = roomRef.current;
@@ -259,9 +275,14 @@ export default function GameClient() {
   }, [room]);
 
   const setTouchKey = useCallback((key: string, active: boolean) => {
+    const changed = active
+      ? !pressedKeysRef.current.has(key)
+      : pressedKeysRef.current.has(key);
+    if (!changed) return;
     if (active) pressedKeysRef.current.add(key);
     else pressedKeysRef.current.delete(key);
-  }, []);
+    sendMovementNow();
+  }, [sendMovementNow]);
 
   const serverNow = clockNow + serverOffset;
   const finalChase = isFinalChase(snapshot, serverNow);
@@ -416,7 +437,7 @@ export default function GameClient() {
             {snapshot?.phase === "COUNTDOWN" && <RoleRevealOverlay snapshot={snapshot} serverNow={serverNow} />}
             {snapshot?.seekerPreview && (
               <div className="preview-ribbon">
-                <span aria-hidden="true">◎</span>
+                <span aria-hidden="true">☾</span>
                 <div><strong>기준 맵 탐색 중</strong><small>마우스 드래그 이동 · 휠 확대/축소 · 숨는 이용자는 보이지 않아요</small></div>
               </div>
             )}
@@ -468,10 +489,10 @@ function RoleCard({ snapshot }: { snapshot?: GameSnapshot }) {
   const role = snapshot?.self.role ?? "SPECTATOR";
   return (
     <div className={`role-card role-${role.toLowerCase()}`}>
-      <span aria-hidden="true">{role === "HIDER" ? "▣" : role === "SEEKER" ? "◎" : "⌛"}</span>
+      <span aria-hidden="true">{role === "HIDER" ? "▣" : role === "SEEKER" ? "☾" : "⌛"}</span>
       <div><small>내 역할 · 현재 목표</small><strong>{role === "HIDER" ? "틈새정령" : role === "SEEKER" ? "밤지기 관찰자" : "대기 중"}</strong></div>
       <p>{roleInstruction(snapshot)}</p>
-      {role === "SEEKER" && <em>이동 우위 · 틈새정령보다 약 56% 빠름</em>}
+      {role === "SEEKER" && <em>이동 우위 · 틈새정령보다 약 46% 빠름</em>}
       {role === "HIDER" && <em>{snapshot?.self.locked ? "◆ 지금은 사물 고정 상태" : "이동하면 짧은 파문이 남아요"}</em>}
     </div>
   );
@@ -548,7 +569,7 @@ function RoleRevealOverlay({ snapshot, serverNow }: { snapshot: GameSnapshot; se
     : ["주변과 자연스럽게 어울리는 자리를 찾으세요.", "자리를 정하면 ‘사물 고정’으로 파문을 숨기세요.", "수색 중에는 자리바꿈과 포탈을 탈출에 활용하세요."];
   return (
     <div className={`game-overlay role-reveal-overlay ${seeker ? "reveal-seeker" : "reveal-hider"}`} role="dialog" aria-label={`${roleName} 역할 안내`}>
-      <span className="role-reveal-symbol" aria-hidden="true">{seeker ? "◎" : "▣"}</span>
+      <span className="role-reveal-symbol" aria-hidden="true">{seeker ? "☾" : "▣"}</span>
       <p className="role-reveal-kicker">{snapshot.round}라운드 역할 확정</p>
       <strong>당신은 <em>{roleName}</em>입니다</strong>
       <p className="role-reveal-goal">{seeker ? "제한시간 안에 모든 틈새정령을 찾아내세요." : "평범한 사물처럼 숨어 수색 종료까지 살아남으세요."}</p>
@@ -584,6 +605,7 @@ function TouchPad({ setKey }: { setKey: (key: string, active: boolean) => void }
     onPointerDown: () => setKey(key, true),
     onPointerUp: () => setKey(key, false),
     onPointerLeave: () => setKey(key, false),
+    onPointerCancel: () => setKey(key, false),
   });
   return (
     <div className="touch-pad" aria-label="화면 이동키">
@@ -598,7 +620,7 @@ function TouchPad({ setKey }: { setKey: (key: string, active: boolean) => void }
 function ResultOverlay({ snapshot }: { snapshot: GameSnapshot }) {
   return (
     <div className="game-overlay result-overlay">
-      <span>{snapshot.result?.winner === "HIDERS" ? "▣ 끝까지 자연스러웠어요" : "◎ 관찰이 정확했어요"}</span>
+      <span>{snapshot.result?.winner === "HIDERS" ? "▣ 끝까지 자연스러웠어요" : "☾ 관찰이 정확했어요"}</span>
       <strong>{snapshot.result?.headline}</strong>
       <ol>{snapshot.replay.slice(-3).map((beat) => <li key={beat.id}>{beat.label}</li>)}</ol>
     </div>

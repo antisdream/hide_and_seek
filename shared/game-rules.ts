@@ -1,7 +1,7 @@
 import type { GameRules } from "./game-types";
 
 export const DEFAULT_RULES: GameRules = {
-  tickRate: 20,
+  tickRate: 30,
   minPlayers: 4,
   maxPlayers: 10,
   totalRounds: 3,
@@ -10,8 +10,8 @@ export const DEFAULT_RULES: GameRules = {
   seekingMs: 125_000,
   seekingMsPerExtraPlayer: 15_000,
   resultMs: 10_000,
-  hiderSpeed: 5,
-  seekerSpeed: 7.8,
+  hiderSpeed: 6.5,
+  seekerSpeed: 9.5,
   tagDistance: 2.6,
   tagCooldownMs: 1_200,
   wrongTagCooldownMs: 3_000,

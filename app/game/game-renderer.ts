@@ -48,6 +48,26 @@ const TILE = 40;
 const VIEW_WIDTH = 24 * TILE;
 const VIEW_HEIGHT = 16 * TILE;
 const PREVIEW_MAX_ZOOM = 1.25;
+const MOVEMENT_RESPONSE_MS = 28;
+
+/** 서버 스냅숏 사이에서도 프레임 시간에 비례해 같은 체감 속도로 좌표를 보간한다. */
+export function movementSmoothingBlend(deltaMs: number, responseMs = MOVEMENT_RESPONSE_MS): number {
+  const safeDelta = Number.isFinite(deltaMs) ? Math.max(0, deltaMs) : 0;
+  const safeResponse = Number.isFinite(responseMs) ? Math.max(1, responseMs) : MOVEMENT_RESPONSE_MS;
+  return 1 - Math.exp(-safeDelta / safeResponse);
+}
+
+/** 밤지기마다 기존 아바타 색을 위협적인 오라 색으로 이어받는다. */
+export function seekerThreatAccent(avatar: string | undefined): number {
+  return ({
+    coral: 0xff5f68,
+    mint: 0x55d8b6,
+    yellow: 0xffc857,
+    violet: 0xb58cff,
+    blue: 0x698cff,
+    peach: 0xff8c61,
+  } as Record<string, number>)[avatar ?? ""] ?? 0xff5f68;
+}
 
 /** 큰 맵도 처음에는 한 화면에 들어오도록 사전 탐색 배율을 계산한다. */
 export function previewCameraZoom(
@@ -128,8 +148,8 @@ export async function mountGameRenderer(
         this.redrawTransients();
       }
 
-      // 빠른 관찰자가 화면에서 뒤늦게 끌려오는 느낌이 없도록 표시 지연만 줄인다.
-      const blend = 1 - Math.exp(-delta / 45);
+      // 30Hz 서버 좌표 사이를 프레임 단위로 빠르게 잇되 포탈 이동은 즉시 반영한다.
+      const blend = movementSmoothingBlend(delta);
       for (const view of this.entityViews.values()) {
         const gap = Math.hypot(view.targetX - view.container.x, view.targetY - view.container.y);
         if (gap > TILE * 4) {
@@ -278,7 +298,7 @@ export async function mountGameRenderer(
       if (!seekerPreview && controlledId && controlledId !== this.followedEntityId) {
         const controlled = this.entityViews.get(controlledId)?.container;
         if (controlled) {
-          this.cameras.main.startFollow(controlled, true, 0.14, 0.14);
+          this.cameras.main.startFollow(controlled, true, 0.28, 0.28);
           this.followedEntityId = controlledId;
         }
       }
@@ -532,25 +552,68 @@ export async function mountGameRenderer(
     }
 
     private drawSeeker(container: Phaser.GameObjects.Container, entity: WorldEntity): void {
-      const body = this.add.graphics();
-      body.fillStyle(0xffd76a, 1);
-      body.lineStyle(entity.controlled ? 4 : 2, entity.controlled ? 0x63d6b5 : 0x171a33, 1);
-      body.fillRoundedRect(-19, -17, 38, 38, 14);
-      body.strokeRoundedRect(-19, -17, 38, 38, 14);
-      body.fillTriangle(-15, -14, -10, -30, -2, -17);
-      body.fillTriangle(15, -14, 10, -30, 2, -17);
-      body.fillStyle(0x25213a, 1);
-      body.fillCircle(-6, -2, 3);
-      body.fillCircle(6, -2, 3);
-      body.fillStyle(0xff6f61, 1);
-      body.fillCircle(0, 5, 3);
-      body.lineStyle(3, 0x9cb0ff, 0.9);
-      body.strokeCircle(0, 1, 25);
-      container.add(body);
+      const accent = seekerThreatAccent(entity.avatar);
+      const outline = entity.controlled ? 0x63d6b5 : accent;
 
-      const badge = this.add.text(0, 31, entity.controlled ? "나 · 관찰자" : entity.displayName ?? "관찰자", {
+      const shadow = this.add.graphics();
+      shadow.fillStyle(0x080913, 0.72);
+      shadow.fillEllipse(0, 26, 58, 17);
+
+      const aura = this.add.graphics();
+      aura.lineStyle(entity.controlled ? 5 : 3, outline, entity.controlled ? 0.78 : 0.42);
+      aura.strokeCircle(0, 1, 31);
+      aura.lineStyle(2, 0xff435f, 0.55);
+      aura.arc(0, 2, 36, Math.PI * 0.12, Math.PI * 0.88, false);
+      aura.arc(0, 2, 36, Math.PI * 1.12, Math.PI * 1.88, false);
+
+      const cloak = this.add.graphics();
+      cloak.fillStyle(0x10121f, 1);
+      cloak.lineStyle(entity.controlled ? 4 : 3, outline, 1);
+      cloak.fillTriangle(-28, 28, 28, 28, 0, -4);
+      cloak.fillRoundedRect(-23, -22, 46, 49, 13);
+      cloak.strokeRoundedRect(-23, -22, 46, 49, 13);
+
+      // 초기 귀여운 밤지기의 뿔과 노란 얼굴은 가면으로 남기고, 망토와 균열을 덧입힌다.
+      cloak.fillTriangle(-20, -17, -14, -37, -4, -20);
+      cloak.fillTriangle(20, -17, 14, -37, 4, -20);
+      cloak.lineBetween(-20, -17, -14, -37);
+      cloak.lineBetween(-14, -37, -4, -20);
+      cloak.lineBetween(20, -17, 14, -37);
+      cloak.lineBetween(14, -37, 4, -20);
+      cloak.fillStyle(accent, 0.82);
+      cloak.fillTriangle(-22, 3, -36, 13, -21, 17);
+      cloak.fillTriangle(22, 3, 36, 13, 21, 17);
+      cloak.fillTriangle(-16, 24, -7, 35, -2, 25);
+      cloak.fillTriangle(16, 24, 7, 35, 2, 25);
+
+      const mask = this.add.graphics();
+      mask.fillStyle(0xffd76a, 0.94);
+      mask.lineStyle(2, 0x090a12, 1);
+      mask.fillRoundedRect(-15, -13, 30, 27, 10);
+      mask.strokeRoundedRect(-15, -13, 30, 27, 10);
+      mask.fillStyle(accent, 1);
+      mask.fillTriangle(-12, -5, -2, -4, -7, 2);
+      mask.fillTriangle(12, -5, 2, -4, 7, 2);
+      mask.fillStyle(0xffffff, 0.92);
+      mask.fillCircle(-7, -2, 1.4);
+      mask.fillCircle(7, -2, 1.4);
+      mask.fillStyle(0xff435f, 1);
+      mask.fillCircle(0, 4, 2.5);
+      mask.lineStyle(2, 0x531326, 1);
+      mask.lineBetween(-8, 8, -4, 11);
+      mask.lineBetween(-4, 11, 0, 8);
+      mask.lineBetween(0, 8, 4, 11);
+      mask.lineBetween(4, 11, 8, 8);
+      mask.lineStyle(1.5, 0x531326, 0.9);
+      mask.lineBetween(-2, -12, 1, -7);
+      mask.lineBetween(1, -7, -2, -3);
+      mask.lineBetween(-2, -3, 2, 1);
+
+      container.add([shadow, aura, cloak, mask]);
+
+      const badge = this.add.text(0, 39, entity.controlled ? "나 · 밤지기" : entity.displayName ?? "밤지기", {
         color: "#ffffff",
-        backgroundColor: "#25213acc",
+        backgroundColor: "#111321e8",
         fontFamily: "Pretendard, sans-serif",
         fontSize: "11px",
         fontStyle: "bold",
@@ -609,7 +672,8 @@ export async function mountGameRenderer(
     width: VIEW_WIDTH,
     height: VIEW_HEIGHT,
     backgroundColor: "#171a33",
-    render: { antialias: true, pixelArt: false, roundPixels: true },
+    // 빠른 이동에서도 좌표를 정수 픽셀로 강제하지 않아 미세한 떨림을 줄인다.
+    render: { antialias: true, pixelArt: false, roundPixels: false },
     scale: {
       mode: PhaserRuntime.Scale.FIT,
       autoCenter: PhaserRuntime.Scale.CENTER_BOTH,

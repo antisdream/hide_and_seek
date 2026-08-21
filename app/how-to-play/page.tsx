@@ -28,6 +28,7 @@ const playerTimings = [
 const guideShots = [
   {
     image: "/how-to-play/01-entry.jpg",
+    capturedAt: "2026-08-20",
     eyebrow: "게임 전",
     title: "별명과 플레이 방식을 선택합니다",
     copy: "회원가입 없이 별명만 정하면 됩니다. 무작위 이용자는 빠른 매칭, 친구는 초대방, 처음이라면 봇 연습방이 편합니다.",
@@ -37,6 +38,7 @@ const guideShots = [
   },
   {
     image: "/how-to-play/02-lobby.jpg",
+    capturedAt: "2026-08-20",
     eyebrow: "대기실",
     title: "모두 모이면 준비 완료를 누릅니다",
     copy: "왼쪽에서 참가자와 준비 상태를 확인합니다. 친구에게는 상단의 방 코드 복사 버튼으로 현재 접속 주소가 포함된 링크를 보낼 수 있습니다.",
@@ -46,15 +48,17 @@ const guideShots = [
   },
   {
     image: "/how-to-play/03-role-seeker.jpg",
+    capturedAt: "2026-08-21",
     eyebrow: "역할 공개",
     title: "큰 역할표에서 내 목표부터 확인합니다",
     copy: "10초 동안 역할 이름, 승리 조건과 첫 행동을 보여줍니다. 다른 참가자의 역할과 위치는 이 화면에서 공개되지 않습니다.",
     notes: ["현재 라운드와 남은 준비 시간", "내 역할 이름과 역할 전용 색상", "곧 해야 할 첫 행동 세 가지", "오른쪽에 계속 남는 현재 역할·목표"],
     markers: [[50, 7], [50, 38], [50, 62], [87, 21]],
-    tip: "관찰자는 틈새정령보다 약 56% 빠릅니다. 대신 수상하지 않은 사물을 확인하면 집중력과 재사용 시간이 손해를 봅니다.",
+    tip: "관찰자는 틈새정령보다 약 46% 빠릅니다. 두 역할 모두 빨라졌으므로 직선 추격보다 포탈과 구조물을 함께 읽어야 합니다.",
   },
   {
     image: "/how-to-play/04-hider-hiding.jpg",
+    capturedAt: "2026-08-20",
     eyebrow: "틈새정령",
     title: "사물 사이에서 자연스러운 자리를 만듭니다",
     copy: "WASD·방향키 또는 화면 이동키로 움직입니다. 자리를 정했으면 사물 고정으로 파문을 숨기고, 필요할 때 자리바꿈과 포탈로 빠져나갑니다.",
@@ -64,6 +68,7 @@ const guideShots = [
   },
   {
     image: "/how-to-play/05-seeker-preview.jpg",
+    capturedAt: "2026-08-21",
     eyebrow: "관찰자 준비",
     title: "숨는 장면이 아닌 기준 배치를 기억합니다",
     copy: "숨기 시간에 틈새정령은 보이지 않습니다. 마우스로 맵을 끌고 휠로 확대하거나 직접 이동해 구조물, 기본 사물과 포탈 도착점을 확인합니다.",
@@ -73,6 +78,7 @@ const guideShots = [
   },
   {
     image: "/how-to-play/06-seeking.jpg",
+    capturedAt: "2026-08-21",
     eyebrow: "관찰자 수색",
     title: "차이를 찾고 가까이에서 확인합니다",
     copy: "기준 배치와 달라 보이는 사물에 2.6칸 안까지 다가가 클릭합니다. 막힐 때는 관찰 렌즈와 팀 신호로 후보 구역을 좁힙니다.",
@@ -82,6 +88,7 @@ const guideShots = [
   },
   {
     image: "/how-to-play/07-result.jpg",
+    capturedAt: "2026-08-21",
     eyebrow: "라운드 결과",
     title: "승패와 주요 장면을 확인합니다",
     copy: "모든 틈새정령을 찾으면 관찰자 승리, 한 명이라도 시간 끝까지 살아남으면 틈새정령 승리입니다. 세 번째 결과 뒤에는 최종 점수와 재경기 준비가 열립니다.",
@@ -125,7 +132,7 @@ export default function HowToPlayPage() {
                   <Image src={shot.image} alt={`${shot.title} 실제 게임 화면`} width={1280} height={720} sizes="(max-width: 900px) 100vw, 720px" />
                   {shot.markers.map(([left, top], markerIndex) => <i key={`${left}-${top}`} style={{ left: `${left}%`, top: `${top}%` }} aria-hidden="true">{markerIndex + 1}</i>)}
                 </div>
-                <figcaption>2026-08-20 로컬 멀티플레이 검증 화면 · 테스트용 별명 사용</figcaption>
+                <figcaption>{shot.capturedAt} 로컬 멀티플레이 검증 화면 · 테스트용 별명 사용</figcaption>
               </figure>
               <div className="shot-notes"><strong>화면에서 확인할 것</strong><ol>{shot.notes.map((note) => <li key={note}>{note}</li>)}</ol><p><b>도움말</b>{shot.tip}</p></div>
             </article>
@@ -134,8 +141,8 @@ export default function HowToPlayPage() {
       </section>
 
       <section className="roles-guide" aria-label="역할 설명">
-        <article className="hider-guide"><span aria-hidden="true">▣</span><div><small>숨는 팀</small><h2>틈새정령</h2><p>이동속도 5.0으로 잡화점 물건과 똑같은 모습으로 숨습니다. 이동을 멈추는 사물 고정과 한 번뿐인 자리바꿈을 활용하세요.</p><ul><li>미션 구역에서 2초간 고정하면 25점</li><li>이동할 때 남는 짧은 파문에 주의</li><li>발견된 뒤에도 팀 신호로 동료 지원</li></ul></div></article>
-        <article className="seeker-guide"><span aria-hidden="true">◎</span><div><small>찾는 팀</small><h2>밤지기 관찰자</h2><p>이동속도 7.8로 틈새정령보다 약 56% 빠릅니다. 기준 배치와 비교한 뒤 가까운 수상한 사물에 확인 스티커를 붙이세요.</p><ul><li>오답이면 집중력 25 감소와 재사용 대기</li><li>관찰 렌즈는 최근 움직임 구역만 표시</li><li>선반 너머나 먼 사물은 확인 불가</li></ul></div></article>
+        <article className="hider-guide"><span aria-hidden="true">▣</span><div><small>숨는 팀</small><h2>틈새정령</h2><p>이동속도 6.5로 잡화점 물건과 똑같은 모습으로 숨습니다. 빨라진 이동, 사물 고정과 한 번뿐인 자리바꿈을 활용하세요.</p><ul><li>미션 구역에서 2초간 고정하면 25점</li><li>이동할 때 남는 짧은 파문에 주의</li><li>발견된 뒤에도 팀 신호로 동료 지원</li></ul></div></article>
+        <article className="seeker-guide"><span aria-hidden="true">☾</span><div><small>찾는 팀</small><h2>밤지기 관찰자</h2><p>이동속도 9.5로 틈새정령보다 약 46% 빠릅니다. 위협적인 밤지기 외형으로 기준 배치를 비교한 뒤 수상한 사물에 확인 스티커를 붙이세요.</p><ul><li>오답이면 집중력 25 감소와 재사용 대기</li><li>관찰 렌즈는 최근 움직임 구역만 표시</li><li>선반 너머나 먼 사물은 확인 불가</li></ul></div></article>
       </section>
 
       <section className="controls-guide">

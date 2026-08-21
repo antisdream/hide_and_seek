@@ -280,6 +280,7 @@ button { color: inherit; }
 .parade-prop.pencil { width: 95px; height: 27px; border-radius: 12px; background: var(--yellow); transform: rotate(-8deg); }
 .parade-prop.tape { width: 65px; height: 65px; border-radius: 50%; background: var(--mint); animation-delay: -.4s; }
 .parade-prop.tape::after { content: ""; width: 24px; height: 24px; position: absolute; left: 18px; top: 18px; border: 2px solid var(--ink); border-radius: 50%; background: white; }
+/* 초기 귀여운 밤지기 모루는 소개용 원본 디자인으로 보존하고 실제 경기 외형과 분리한다. */
 .parade-seeker { width: 78px; height: 70px; border-radius: 27px; background: var(--yellow); animation-delay: -.8s; }
 .parade-seeker::before, .parade-seeker::after { content: ""; width: 21px; height: 28px; position: absolute; top: -16px; border: 2px solid var(--ink); border-bottom: 0; background: var(--yellow); transform: rotate(14deg); }
 .parade-seeker::before { left: 8px; border-radius: 14px 2px 0 0; }
@@ -367,10 +368,12 @@ button { color: inherit; }
 .compact-overlay strong { padding: 0; color: var(--yellow); font-size: 45px; }
 .role-reveal-overlay { padding: 26px; gap: 8px; background: rgba(18,21,40,.94); }
 .role-reveal-overlay .role-reveal-symbol { width: 58px; height: 58px; display: grid; place-items: center; border: 2px solid #15182c; border-radius: 20px; background: var(--yellow); color: var(--ink); box-shadow: 4px 5px 0 rgba(0,0,0,.28); font-size: 29px; }
+.role-reveal-overlay.reveal-seeker .role-reveal-symbol { border-color: #ff5f68; background: #10121f; color: #ff5f68; box-shadow: 0 0 24px rgba(255,67,95,.34), 4px 5px 0 rgba(0,0,0,.35); }
 .role-reveal-overlay.reveal-hider .role-reveal-symbol { background: var(--mint); }
 .role-reveal-overlay .role-reveal-kicker { margin: 6px 0 0; color: #aab2c7; font-size: 10px; font-weight: 900; letter-spacing: .08em; }
 .role-reveal-overlay > strong { font-size: clamp(24px, 3vw, 38px); }
 .role-reveal-overlay > strong em { color: var(--yellow); font-style: normal; }
+.role-reveal-overlay.reveal-seeker > strong em, .role-reveal-overlay.reveal-seeker .role-reveal-footer time { color: #ff6f7a; }
 .role-reveal-overlay.reveal-hider > strong em { color: var(--mint); }
 .role-reveal-overlay .role-reveal-goal { margin: 0; color: #d5daea; font-size: 12px; line-height: 1.55; }
 .role-reveal-overlay ol { width: min(560px, 90%); margin: 8px 0; padding: 13px 19px 13px 39px; border: 1px solid #454c67; border-radius: 14px; background: rgba(255,255,255,.05); color: #e6e9f2; font-size: 11px; line-height: 1.65; text-align: left; }
@@ -392,6 +395,8 @@ button { color: inherit; }
 .role-card strong { margin-top: 3px; font-size: 14px; }
 .role-card p { grid-column: 1 / -1; margin: 4px 0 0; color: #b4bbce; font-size: 10px; line-height: 1.55; }
 .role-card em { grid-column: 1 / -1; padding: 6px 8px; border-radius: 8px; background: #22263d; color: #f7d99b; font-size: 8px; font-style: normal; font-weight: 900; }
+.role-seeker > span { border: 1px solid #ff5f68; background: #111321; color: #ff5f68; box-shadow: 0 0 16px rgba(255,95,104,.24); }
+.role-seeker em { color: #ff9ca3; }
 .role-hider em { color: #9ce4d0; }
 .role-hider > span { background: var(--mint); }
 .focus-card { margin: 12px 0; padding: 12px; border: 1px solid #373c56; border-radius: 13px; background: #252940; }

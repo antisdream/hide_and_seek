@@ -35,10 +35,12 @@ test("오답과 집중력 소진에 더 긴 재사용 대기를 적용한다", (
   assert.equal(tagCooldown(0, false, DEFAULT_RULES), DEFAULT_RULES.emptyFocusCooldownMs);
 });
 
-test("틈새정령 속도는 유지하고 관찰자만 50퍼센트 이상 빠르게 한다", () => {
-  assert.equal(DEFAULT_RULES.hiderSpeed, 5);
-  assert.equal(DEFAULT_RULES.seekerSpeed, 7.8);
-  assert.ok(DEFAULT_RULES.seekerSpeed / DEFAULT_RULES.hiderSpeed >= 1.5);
+test("두 역할을 빠르게 하되 관찰자의 추격 우위는 40퍼센트 이상 유지한다", () => {
+  assert.equal(DEFAULT_RULES.tickRate, 30);
+  assert.equal(DEFAULT_RULES.hiderSpeed, 6.5);
+  assert.equal(DEFAULT_RULES.seekerSpeed, 9.5);
+  assert.ok(DEFAULT_RULES.seekerSpeed / DEFAULT_RULES.hiderSpeed >= 1.4);
+  assert.ok(DEFAULT_RULES.seekerSpeed / DEFAULT_RULES.hiderSpeed < 1.5);
 });
 
 test("확인 스티커는 결과에 따라 체감 가능한 재사용 대기를 둔다", () => {
