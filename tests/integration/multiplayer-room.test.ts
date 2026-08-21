@@ -120,6 +120,12 @@ test("4개 실제 소켓이 기준 맵 비공개·포탈 이동과 전체 라운
     assert.equal(final.round, 1);
     assert.equal(final.result?.winner, "HIDERS");
     assert.equal(final.players.every((player) => Boolean(player.revealedRole)), true);
+    assert.equal(
+      final.players
+        .filter((player) => player.revealedRole === "HIDER")
+        .every((player) => player.survivalScore === 80 && player.score >= 130),
+      true,
+    );
     assert.equal(runtime.store.count(), 1);
   } finally {
     await Promise.allSettled(rooms.map((room) => room.leave(true)));
@@ -218,7 +224,7 @@ test("초대방은 방 ID로 합류하고 공개 매칭에서는 제외된다", 
   }
 });
 
-test("연습방은 한 명 준비 후 세 봇과 시작한다", { timeout: 10_000 }, async () => {
+test("AI 방은 선택한 난이도로 한 명과 AI 세 명이 함께 시작한다", { timeout: 10_000 }, async () => {
   const runtime = createNunchisoomServer({
     allowedOrigins: [],
     databasePath: ":memory:",
@@ -231,6 +237,7 @@ test("연습방은 한 명 준비 후 세 봇과 시작한다", { timeout: 10_00
     const client = new ColyseusSDK(`http://127.0.0.1:${port}`);
     room = await client.create("nunchisoom", {
       mode: "practice",
+      aiDifficulty: "hard",
       displayName: "연습자",
       deviceId: "practice-device-001",
     });
@@ -242,7 +249,112 @@ test("연습방은 한 명 준비 후 세 봇과 시작한다", { timeout: 10_00
     assert.equal(snapshot.players.length, 4);
     assert.equal(snapshot.maxPlayers, 4);
     assert.equal(snapshot.players.filter((player) => player.bot).length, 3);
-    assert.equal(snapshot.self.role, "SEEKER");
+    assert.equal(snapshot.aiDifficulty, "hard");
+    assert.ok(snapshot.self.role === "HIDER" || snapshot.self.role === "SEEKER");
+    assert.equal(snapshot.self.movementSpeed, snapshot.self.role === "SEEKER" ? 9.5 : 6.5);
+  } finally {
+    if (room) await room.leave(true);
+    await runtime.shutdown();
+  }
+});
+
+test("AI 방에 친구가 합류하면 AI 한 명이 빠져 네 자리를 유지한다", { timeout: 10_000 }, async () => {
+  const runtime = createNunchisoomServer({
+    allowedOrigins: [],
+    databasePath: ":memory:",
+    rules: FAST_TEST_RULES,
+    greet: false,
+  });
+  const rooms: Room[] = [];
+  try {
+    const port = await runtime.listen(0);
+    const hostClient = new ColyseusSDK(`http://127.0.0.1:${port}`);
+    const friendClient = new ColyseusSDK(`http://127.0.0.1:${port}`);
+    const hostRoom = await hostClient.create("nunchisoom", {
+      mode: "practice",
+      aiDifficulty: "normal",
+      displayName: "AI방장",
+      deviceId: "practice-mixed-host",
+    });
+    registerExpectedMessages(hostRoom);
+    rooms.push(hostRoom);
+    const friendRoom = await friendClient.joinById(hostRoom.roomId, {
+      mode: "invite",
+      displayName: "초대친구",
+      deviceId: "practice-mixed-friend",
+    });
+    registerExpectedMessages(friendRoom);
+    rooms.push(friendRoom);
+
+    const snapshot = await waitForSnapshot(hostRoom, (state) => (
+      state.players.length === 4 && state.players.filter((player) => player.bot).length === 2
+    ));
+    assert.equal(snapshot.mode, "practice");
+    assert.equal(snapshot.players.filter((player) => !player.bot).length, 2);
+    assert.equal(snapshot.aiDifficulty, "normal");
+  } finally {
+    await Promise.allSettled(rooms.map((room) => room.leave(true)));
+    await runtime.shutdown();
+  }
+});
+
+test("세 라운드 AI 방은 관찰자를 연속 배정하지 않고 AI 관찰자도 순찰한다", { timeout: 15_000 }, async () => {
+  const runtime = createNunchisoomServer({
+    allowedOrigins: [],
+    databasePath: ":memory:",
+    rules: {
+      ...FAST_TEST_RULES,
+      totalRounds: 3,
+      countdownMs: 80,
+      hidingMs: 700,
+      seekingMs: 500,
+      resultMs: 80,
+    },
+    greet: false,
+  });
+  let room: Room | undefined;
+  try {
+    const port = await runtime.listen(0);
+    const client = new ColyseusSDK(`http://127.0.0.1:${port}`);
+    room = await client.create("nunchisoom", {
+      mode: "practice",
+      aiDifficulty: "hard",
+      displayName: "역할검증자",
+      deviceId: "practice-role-rotation",
+    });
+    registerExpectedMessages(room);
+    room.send("ready", true);
+
+    const seekerNames: string[] = [];
+    let aiSeekerMoved = false;
+    for (let round = 1; round <= 3; round += 1) {
+      const hiding = await waitForSnapshot(room, (state) => state.phase === "HIDING" && state.round === round, 5_000);
+      const seeker = hiding.entities.find((entity) => entity.category === "seeker");
+      assert.ok(seeker?.displayName);
+      seekerNames.push(seeker.displayName);
+
+      if (!seeker.controlled) {
+        const moved = await waitForSnapshot(room, (state) => {
+          if (state.phase !== "HIDING" || state.round !== round) return false;
+          const current = state.entities.find((entity) => entity.id === seeker.id);
+          return Boolean(current && Math.hypot(current.x - seeker.x, current.y - seeker.y) > 0.05);
+        }, 1_500);
+        aiSeekerMoved ||= moved.entities.some((entity) => entity.id === seeker.id);
+      }
+
+      const result = await waitForSnapshot(room, (state) => state.phase === "RESULT" && state.round === round, 5_000);
+      assert.equal(
+        result.players
+          .filter((player) => player.revealedRole === "HIDER")
+          .every((player) => [20, 40, 60, 80].includes(player.survivalScore ?? -1)),
+        true,
+      );
+    }
+    await waitForSnapshot(room, (state) => state.phase === "FINAL", 5_000);
+    assert.equal(new Set(seekerNames).size, 3);
+    assert.notEqual(seekerNames[0], seekerNames[1]);
+    assert.notEqual(seekerNames[1], seekerNames[2]);
+    assert.equal(aiSeekerMoved, true);
   } finally {
     if (room) await room.leave(true);
     await runtime.shutdown();

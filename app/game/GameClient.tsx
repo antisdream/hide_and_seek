@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ColyseusSDK, type Room } from "@colyseus/sdk";
 import type {
+  AiDifficulty,
   GameEffect,
   GamePhase,
   GameSnapshot,
@@ -11,6 +12,7 @@ import type {
   RoomMode,
   TeamPing,
 } from "../../shared/game-types";
+import { aiDifficultyLabel, isAiDifficulty } from "../../shared/ai-rules";
 import { copyTextToClipboard, createClientId } from "../../shared/client-runtime";
 import { normalizeInviteCode } from "../../shared/invite-code";
 import { createInviteUrl, resolveGameServerEndpoint } from "../../shared/network-url";
@@ -26,10 +28,12 @@ interface Notice {
 }
 
 const CONFIGURED_GAME_ENDPOINT = process.env.NEXT_PUBLIC_GAME_SERVER_URL;
-const MOVE_SEND_INTERVAL_MS = 1_000 / 30;
+const MOVE_SEND_INTERVAL_MS = 100;
+const HUD_UPDATE_INTERVAL_MS = 100;
 
 export default function GameClient() {
   const [displayName, setDisplayName] = useState("");
+  const [aiDifficulty, setAiDifficulty] = useState<AiDifficulty>("normal");
   const [inviteRoomId, setInviteRoomId] = useState("");
   const [inviteCodeInput, setInviteCodeInput] = useState("");
   const [status, setStatus] = useState<ConnectionStatus>("idle");
@@ -46,17 +50,60 @@ export default function GameClient() {
   const pressedKeysRef = useRef(new Set<string>());
   const snapshotRef = useRef<GameSnapshot | undefined>(undefined);
   const previousPhaseRef = useRef<GamePhase | undefined>(undefined);
+  const pendingHudSnapshotRef = useRef<GameSnapshot | undefined>(undefined);
+  const hudTimerRef = useRef<number | undefined>(undefined);
+  const hudPublishedAtRef = useRef(0);
+  const hudSemanticKeyRef = useRef("");
 
   const sendMovementNow = useCallback(() => {
+    const direction = movementFromKeys(pressedKeysRef.current);
+    rendererRef.current?.setLocalMovement(direction);
     const activeRoom = roomRef.current;
     if (!activeRoom) return;
-    const direction = movementFromKeys(pressedKeysRef.current);
     activeRoom.send("move", { seq: nextSequence(sequenceRef), ...direction });
+  }, []);
+
+  const publishHudSnapshot = useCallback((nextSnapshot: GameSnapshot) => {
+    pendingHudSnapshotRef.current = undefined;
+    hudTimerRef.current = undefined;
+    hudPublishedAtRef.current = performance.now();
+    hudSemanticKeyRef.current = hudSemanticKey(nextSnapshot);
+    setServerOffset(nextSnapshot.serverTime - Date.now());
+    setSnapshot(nextSnapshot);
+  }, []);
+
+  const receiveSnapshot = useCallback((nextSnapshot: GameSnapshot) => {
+    snapshotRef.current = nextSnapshot;
+    rendererRef.current?.pushSnapshot(nextSnapshot);
+    const key = hudSemanticKey(nextSnapshot);
+    const elapsed = performance.now() - hudPublishedAtRef.current;
+    if (key !== hudSemanticKeyRef.current || elapsed >= HUD_UPDATE_INTERVAL_MS) {
+      if (hudTimerRef.current !== undefined) window.clearTimeout(hudTimerRef.current);
+      publishHudSnapshot(nextSnapshot);
+      return;
+    }
+    pendingHudSnapshotRef.current = nextSnapshot;
+    if (hudTimerRef.current !== undefined) return;
+    hudTimerRef.current = window.setTimeout(() => {
+      const pending = pendingHudSnapshotRef.current;
+      if (pending) publishHudSnapshot(pending);
+      else hudTimerRef.current = undefined;
+    }, Math.max(0, HUD_UPDATE_INTERVAL_MS - elapsed));
+  }, [publishHudSnapshot]);
+
+  const clearHudSchedule = useCallback(() => {
+    if (hudTimerRef.current !== undefined) window.clearTimeout(hudTimerRef.current);
+    hudTimerRef.current = undefined;
+    pendingHudSnapshotRef.current = undefined;
+    hudSemanticKeyRef.current = "";
+    hudPublishedAtRef.current = 0;
   }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setDisplayName(window.localStorage.getItem("nunchisoom-display-name") ?? "");
+      const storedDifficulty = window.localStorage.getItem("nunchisoom-ai-difficulty");
+      if (isAiDifficulty(storedDifficulty)) setAiDifficulty(storedDifficulty);
       const roomId = new URLSearchParams(window.location.search).get("room") ?? "";
       setInviteRoomId(roomId);
       setInviteCodeInput(roomId);
@@ -85,6 +132,7 @@ export default function GameClient() {
       }
       rendererRef.current = renderer;
       if (snapshotRef.current) renderer.pushSnapshot(snapshotRef.current);
+      renderer.setLocalMovement(movementFromKeys(pressedKeysRef.current));
     });
     return () => {
       disposed = true;
@@ -92,11 +140,6 @@ export default function GameClient() {
       rendererRef.current = undefined;
     };
   }, [room]);
-
-  useEffect(() => {
-    snapshotRef.current = snapshot;
-    if (snapshot) rendererRef.current?.pushSnapshot(snapshot);
-  }, [snapshot]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -157,10 +200,11 @@ export default function GameClient() {
   }, [room, sendMovementNow]);
 
   useEffect(() => () => {
+    clearHudSchedule();
     const activeRoom = roomRef.current;
     roomRef.current = undefined;
     if (activeRoom) void activeRoom.leave(true);
-  }, []);
+  }, [clearHudSchedule]);
 
   const connect = useCallback(async (mode: RoomMode, requestedRoomId?: string) => {
     if (status === "connecting") return;
@@ -185,6 +229,7 @@ export default function GameClient() {
         displayName: normalizedName,
         deviceId: getDeviceId(),
         mode,
+        ...(mode === "practice" ? { aiDifficulty } : {}),
       };
       const joinedRoom = normalizedRoomId
         ? await client.joinById(normalizedRoomId, options)
@@ -192,10 +237,7 @@ export default function GameClient() {
           ? await client.joinOrCreate("nunchisoom", options)
           : await client.create("nunchisoom", options);
 
-      joinedRoom.onMessage<GameSnapshot>("state", (nextSnapshot) => {
-        setServerOffset(nextSnapshot.serverTime - Date.now());
-        setSnapshot(nextSnapshot);
-      });
+      joinedRoom.onMessage<GameSnapshot>("state", receiveSnapshot);
       joinedRoom.onMessage<GameEffect>("effect", (effect) => {
         rendererRef.current?.pushEffect(effect);
         setNotice({ id: effect.id, label: effect.label, tone: effect.type === "correct-tag" ? "success" : "normal" });
@@ -219,6 +261,8 @@ export default function GameClient() {
       joinedRoom.onLeave(() => {
         if (roomRef.current === joinedRoom) {
           roomRef.current = undefined;
+          snapshotRef.current = undefined;
+          clearHudSchedule();
           setStatus("closed");
           setRoom(undefined);
           setSnapshot(undefined);
@@ -247,11 +291,14 @@ export default function GameClient() {
         tone: "error",
       });
     }
-  }, [displayName, status]);
+  }, [aiDifficulty, clearHudSchedule, displayName, receiveSnapshot, status]);
 
   const disconnect = useCallback(async () => {
     const activeRoom = roomRef.current;
     roomRef.current = undefined;
+    snapshotRef.current = undefined;
+    rendererRef.current?.setLocalMovement({ x: 0, y: 0 });
+    clearHudSchedule();
     if (activeRoom) await activeRoom.leave(true);
     setRoom(undefined);
     setSnapshot(undefined);
@@ -259,7 +306,7 @@ export default function GameClient() {
     setInviteRoomId("");
     setInviteCodeInput("");
     window.history.replaceState({}, "", "/game");
-  }, []);
+  }, [clearHudSchedule]);
 
   const send = useCallback((type: string, payload: unknown) => {
     roomRef.current?.send(type, payload);
@@ -338,7 +385,7 @@ export default function GameClient() {
               <div className="invite-found">
                 <div><span>초대장 도착</span><strong>{inviteRoomId}</strong></div>
                 <button className="primary-button wide" type="button" disabled={status === "connecting"} onClick={() => void connect("invite", inviteRoomId)}>
-                  초대방 입장
+                  초대받은 방 입장
                 </button>
               </div>
             ) : (
@@ -350,9 +397,32 @@ export default function GameClient() {
                   <span aria-hidden="true">⌁</span><strong>친구방 만들기</strong><small>링크로 지인 초대</small>
                 </button>
                 <button type="button" disabled={status === "connecting"} onClick={() => void connect("practice")}>
-                  <span aria-hidden="true">◎</span><strong>혼자 연습</strong><small>봇 3명과 튜토리얼</small>
+                  <span aria-hidden="true">◎</span><strong>AI 방 만들기</strong><small>부족한 자리는 AI가 참여</small>
                 </button>
               </div>
+            )}
+            {!inviteRoomId && (
+              <fieldset className="ai-difficulty-picker">
+                <legend><strong>AI 난이도</strong><small>AI 방을 만들 때 적용됩니다.</small></legend>
+                <div>
+                  {(["easy", "normal", "hard"] as const).map((difficulty) => (
+                    <button
+                      key={difficulty}
+                      type="button"
+                      className={aiDifficulty === difficulty ? "active" : ""}
+                      aria-pressed={aiDifficulty === difficulty}
+                      disabled={status === "connecting"}
+                      onClick={() => {
+                        setAiDifficulty(difficulty);
+                        window.localStorage.setItem("nunchisoom-ai-difficulty", difficulty);
+                      }}
+                    >
+                      {aiDifficultyLabel(difficulty)}
+                    </button>
+                  ))}
+                </div>
+                <p>{aiDifficultyDescription(aiDifficulty)}</p>
+              </fieldset>
             )}
             {!inviteRoomId && (
               <form
@@ -409,12 +479,15 @@ export default function GameClient() {
 
       <section className="play-grid">
         <aside className="players-panel" aria-label="참가자 목록">
-          <div className="panel-heading"><div><small>{modeLabel(snapshot?.mode)}</small><h2>함께 있는 친구</h2></div><strong>{snapshot?.players.length ?? 0}/{snapshot?.maxPlayers ?? 10}</strong></div>
+          <div className="panel-heading"><div><small>{modeLabel(snapshot?.mode, snapshot?.aiDifficulty)}</small><h2>함께 있는 친구</h2></div><strong>{snapshot?.players.length ?? 0}/{snapshot?.maxPlayers ?? 10}</strong></div>
           <div className="player-list">
             {snapshot?.players.map((player) => (
               <article className={`player-row avatar-${player.avatar}`} key={player.id}>
                 <span className="avatar-face" aria-hidden="true"><i /><i /><b /></span>
-                <div><strong>{player.displayName}{player.bot ? " · 봇" : ""}</strong><small>{player.host ? "방장 · " : ""}{playerStatusLabel(player.status, player.ready, snapshot.phase)}</small></div>
+                <div>
+                  <strong>{player.displayName}{player.bot ? ` · AI ${aiDifficultyLabel(snapshot.aiDifficulty ?? "normal")}` : ""}</strong>
+                  <small>{player.host ? "방장 · " : ""}{playerStatusLabel(player.status, player.ready, snapshot.phase)}{player.survivalScore !== undefined ? ` · 생존 +${player.survivalScore}` : ""}</small>
+                </div>
                 <b>{player.score}</b>
               </article>
             ))}
@@ -713,8 +786,38 @@ function roleInstruction(snapshot?: GameSnapshot): string {
     : "기억한 기준 배치와 비교하고, 가까이 다가가 수상한 사물을 클릭하세요.";
 }
 
-function modeLabel(mode?: RoomMode): string {
-  return mode === "public" ? "빠른 매칭" : mode === "practice" ? "연습방" : "친구 초대방";
+function modeLabel(mode?: RoomMode, difficulty?: AiDifficulty): string {
+  return mode === "public"
+    ? "빠른 매칭"
+    : mode === "practice"
+      ? `AI 방 · ${aiDifficultyLabel(difficulty ?? "normal")}`
+      : "친구 초대방";
+}
+
+function aiDifficultyDescription(difficulty: AiDifficulty): string {
+  return ({
+    easy: "반응이 느리고 단서를 자주 놓쳐 처음 배우기 편합니다.",
+    normal: "시야·기억·실수를 균형 있게 조정한 기본 난이도입니다.",
+    hard: "움직임을 빨리 포착하고 오래 기억하지만 벽 너머 정답은 알지 못합니다.",
+  } satisfies Record<AiDifficulty, string>)[difficulty];
+}
+
+/** 이동 좌표와 서버 버전은 제외하고, 화면 안내가 즉시 바뀌어야 할 사건만 묶는다. */
+function hudSemanticKey(snapshot: GameSnapshot): string {
+  const players = snapshot.players
+    .map((player) => `${player.id}:${player.ready}:${player.status}:${player.score}:${player.survivalScore ?? ""}`)
+    .join("|");
+  return [
+    snapshot.phase,
+    snapshot.round,
+    snapshot.self.role,
+    snapshot.self.caught,
+    snapshot.self.locked,
+    snapshot.self.swapAvailable,
+    snapshot.mission?.completed ?? false,
+    snapshot.result?.winner ?? "",
+    players,
+  ].join(";");
 }
 
 function playerStatusLabel(status: GameSnapshot["players"][number]["status"], ready: boolean, phase: GamePhase): string {

@@ -79,14 +79,27 @@ export function selectSeekers(
   playerIds: string[],
   seekerHistory: ReadonlyMap<string, number>,
   seed: number,
+  previousSeekers: ReadonlySet<string> = new Set(),
 ): Set<string> {
   const count = seekerCountFor(playerIds.length);
-  const shuffled = [...playerIds].sort((a, b) => {
+  const eligible = playerIds.filter((playerId) => !previousSeekers.has(playerId));
+  const candidates = eligible.length >= count ? eligible : playerIds;
+  const shuffled = [...candidates].sort((a, b) => {
     const historyGap = (seekerHistory.get(a) ?? 0) - (seekerHistory.get(b) ?? 0);
     if (historyGap !== 0) return historyGap;
     return seededRank(a, seed) - seededRank(b, seed);
   });
   return new Set(shuffled.slice(0, count));
+}
+
+/**
+ * 수색 시간 생존 비율을 20·40·60·80점의 네 구간으로 올림한다.
+ * 수색이 시작된 뒤 조금이라도 버티면 20점, 한 라운드 최대 생존 점수는 80점이다.
+ */
+export function survivalScoreFor(survivedMs: number, seekingMs: number): number {
+  if (!Number.isFinite(survivedMs) || !Number.isFinite(seekingMs) || seekingMs <= 0) return 0;
+  const ratio = Math.max(0, Math.min(1, survivedMs / seekingMs));
+  return ratio > 0 ? Math.ceil(ratio * 4) * 20 : 0;
 }
 
 function seededRank(value: string, seed: number): number {

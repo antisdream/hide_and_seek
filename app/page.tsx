@@ -102,7 +102,7 @@ export default function Home() {
       </section>
 
       <section className="landing-cta">
-        <div><small>4인 9분 · 10인 최대 13분 30초</small><h2>별명 하나면 준비 끝.</h2><p>실제 화면 안내를 본 뒤 혼자 연습하거나, 친구와 공개방에 합류하세요.</p></div>
+        <div><small>4인 9분 · 10인 최대 13분 30초</small><h2>별명 하나면 준비 끝.</h2><p>실제 화면 안내를 본 뒤 난이도별 AI 방을 만들거나, 친구와 공개방에 합류하세요.</p></div>
         <a className="primary-button" href="/game">잡화점 입장하기</a>
       </section>
 

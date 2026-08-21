@@ -1,7 +1,9 @@
 import type Phaser from "phaser";
+import { isBlocked } from "../../shared/geometry";
 import type {
   GameEffect,
   GameSnapshot,
+  MapLayout,
   MapTheme,
   Point,
   PropKind,
@@ -17,6 +19,7 @@ export interface LensPulse {
 
 export interface GameRenderer {
   pushSnapshot: (snapshot: GameSnapshot) => void;
+  setLocalMovement: (movement: Point) => void;
   pushEffect: (effect: GameEffect) => void;
   pushLens: (pulse: LensPulse) => void;
   pushPing: (ping: TeamPing) => void;
@@ -30,9 +33,15 @@ interface RendererCallbacks {
 interface EntityView {
   container: Phaser.GameObjects.Container;
   signature: string;
-  targetX: number;
-  targetY: number;
-  targetRotation: number;
+  controlled: boolean;
+  samples: MotionSample[];
+}
+
+export interface MotionSample {
+  serverTime: number;
+  x: number;
+  y: number;
+  rotation: number;
 }
 
 interface MapPalette {
@@ -49,12 +58,86 @@ const VIEW_WIDTH = 24 * TILE;
 const VIEW_HEIGHT = 16 * TILE;
 const PREVIEW_MAX_ZOOM = 1.25;
 const MOVEMENT_RESPONSE_MS = 28;
+const REMOTE_INTERPOLATION_DELAY_MS = 50;
+const MAX_EXTRAPOLATION_MS = 66;
+const PORTAL_SNAP_DISTANCE = TILE * 4;
 
 /** 서버 스냅숏 사이에서도 프레임 시간에 비례해 같은 체감 속도로 좌표를 보간한다. */
 export function movementSmoothingBlend(deltaMs: number, responseMs = MOVEMENT_RESPONSE_MS): number {
   const safeDelta = Number.isFinite(deltaMs) ? Math.max(0, deltaMs) : 0;
   const safeResponse = Number.isFinite(responseMs) ? Math.max(1, responseMs) : MOVEMENT_RESPONSE_MS;
   return 1 - Math.exp(-safeDelta / safeResponse);
+}
+
+/**
+ * 시간표가 붙은 서버 좌표를 두 스냅숏 사이에서 선형 보간한다.
+ * 네트워크가 잠깐 늦으면 최대 두 서버 틱까지만 속도를 외삽하고, 포탈 이동은 즉시 전환한다.
+ */
+export function sampleMotionAt(
+  samples: readonly MotionSample[],
+  renderServerTime: number,
+  maxExtrapolationMs = MAX_EXTRAPOLATION_MS,
+): MotionSample | undefined {
+  if (samples.length === 0) return undefined;
+  const first = samples[0];
+  if (samples.length === 1 || renderServerTime <= first.serverTime) return { ...first };
+
+  for (let index = 1; index < samples.length; index += 1) {
+    const previous = samples[index - 1];
+    const next = samples[index];
+    if (renderServerTime > next.serverTime) continue;
+    if (Math.hypot(next.x - previous.x, next.y - previous.y) > PORTAL_SNAP_DISTANCE) {
+      return { ...(renderServerTime < next.serverTime ? previous : next) };
+    }
+    const span = Math.max(1, next.serverTime - previous.serverTime);
+    const ratio = Math.max(0, Math.min(1, (renderServerTime - previous.serverTime) / span));
+    return {
+      serverTime: renderServerTime,
+      x: previous.x + (next.x - previous.x) * ratio,
+      y: previous.y + (next.y - previous.y) * ratio,
+      rotation: interpolateAngle(previous.rotation, next.rotation, ratio),
+    };
+  }
+
+  const latest = samples[samples.length - 1];
+  const previous = samples[samples.length - 2];
+  const span = latest.serverTime - previous.serverTime;
+  if (span <= 0 || Math.hypot(latest.x - previous.x, latest.y - previous.y) > PORTAL_SNAP_DISTANCE) {
+    return { ...latest };
+  }
+  const extraMs = Math.max(0, Math.min(maxExtrapolationMs, renderServerTime - latest.serverTime));
+  return {
+    serverTime: latest.serverTime + extraMs,
+    x: latest.x + ((latest.x - previous.x) / span) * extraMs,
+    y: latest.y + ((latest.y - previous.y) / span) * extraMs,
+    rotation: latest.rotation,
+  };
+}
+
+/** 로컬 입력을 즉시 반영하되 서버와 같은 충돌 반경과 축별 미끄러짐을 사용한다. */
+export function predictLocalMovement(
+  point: Point,
+  input: Point,
+  speed: number,
+  deltaMs: number,
+  map: MapLayout,
+): Point {
+  const safeDelta = Number.isFinite(deltaMs) ? Math.max(0, Math.min(50, deltaMs)) : 0;
+  const length = Math.hypot(input.x, input.y);
+  if (length <= 0 || !Number.isFinite(speed) || speed <= 0) return { ...point };
+  const direction = length > 1 ? { x: input.x / length, y: input.y / length } : input;
+  const step = speed * (safeDelta / 1_000);
+  const next = { ...point };
+  const nextX = { x: point.x + direction.x * step, y: point.y };
+  if (!isBlocked(nextX, 0.36, map)) next.x = nextX.x;
+  const nextY = { x: next.x, y: point.y + direction.y * step };
+  if (!isBlocked(nextY, 0.36, map)) next.y = nextY.y;
+  return next;
+}
+
+function interpolateAngle(from: number, to: number, ratio: number): number {
+  const gap = Math.atan2(Math.sin(to - from), Math.cos(to - from));
+  return from + gap * ratio;
 }
 
 /** 밤지기마다 기존 아바타 색을 위협적인 오라 색으로 이어받는다. */
@@ -119,6 +202,9 @@ export async function mountGameRenderer(
     private previewMinZoom = 1;
     private previewWorldWidth = VIEW_WIDTH;
     private previewWorldHeight = VIEW_HEIGHT;
+    private localMovement: Point = { x: 0, y: 0 };
+    private serverClockOffset = 0;
+    private hasServerClockOffset = false;
 
     constructor() {
       super("night-stationery");
@@ -148,28 +234,59 @@ export async function mountGameRenderer(
         this.redrawTransients();
       }
 
-      // 30Hz 서버 좌표 사이를 프레임 단위로 빠르게 잇되 포탈 이동은 즉시 반영한다.
-      const blend = movementSmoothingBlend(delta);
+      const renderServerTime = now + this.serverClockOffset - REMOTE_INTERPOLATION_DELAY_MS;
       for (const view of this.entityViews.values()) {
-        const gap = Math.hypot(view.targetX - view.container.x, view.targetY - view.container.y);
-        if (gap > TILE * 4) {
-          // 포탈은 긴 거리를 미끄러지지 않고 즉시 도착하게 한다.
-          view.container.setPosition(view.targetX, view.targetY);
-        } else {
-          view.container.x += (view.targetX - view.container.x) * blend;
-          view.container.y += (view.targetY - view.container.y) * blend;
+        const latest = view.samples[view.samples.length - 1];
+        if (!latest) continue;
+        if (view.controlled && this.canPredictLocalMovement()) {
+          const predicted = predictLocalMovement(
+            { x: view.container.x / TILE, y: view.container.y / TILE },
+            this.localMovement,
+            this.snapshot?.self.movementSpeed ?? 0,
+            delta,
+            this.snapshot!.map,
+          );
+          view.container.setPosition(predicted.x * TILE, predicted.y * TILE);
+          const authorityGap = Math.hypot(latest.x - view.container.x, latest.y - view.container.y);
+          if (authorityGap > PORTAL_SNAP_DISTANCE) {
+            view.container.setPosition(latest.x, latest.y);
+          } else {
+            const moving = Math.hypot(this.localMovement.x, this.localMovement.y) > 0;
+            const correction = movementSmoothingBlend(delta, moving ? 210 : 58);
+            view.container.x += (latest.x - view.container.x) * correction;
+            view.container.y += (latest.y - view.container.y) * correction;
+          }
+          if (Math.hypot(this.localMovement.x, this.localMovement.y) > 0) {
+            view.container.rotation = Math.atan2(this.localMovement.y, this.localMovement.x);
+          } else {
+            view.container.rotation = interpolateAngle(
+              view.container.rotation,
+              latest.rotation,
+              movementSmoothingBlend(delta, 58),
+            );
+          }
+          continue;
         }
-        const angleGap = Math.atan2(
-          Math.sin(view.targetRotation - view.container.rotation),
-          Math.cos(view.targetRotation - view.container.rotation),
-        );
-        view.container.rotation += angleGap * blend;
+
+        const sampled = sampleMotionAt(view.samples, renderServerTime);
+        if (!sampled) continue;
+        view.container.setPosition(sampled.x, sampled.y);
+        view.container.setRotation(sampled.rotation);
       }
     }
 
     setSnapshot(snapshot: GameSnapshot): void {
+      const observedOffset = snapshot.serverTime - Date.now();
+      this.serverClockOffset = this.hasServerClockOffset
+        ? this.serverClockOffset + (observedOffset - this.serverClockOffset) * 0.12
+        : observedOffset;
+      this.hasServerClockOffset = true;
       this.snapshot = snapshot;
       if (this.sceneReady) this.applySnapshot(snapshot);
+    }
+
+    setLocalMovement(movement: Point): void {
+      this.localMovement = { x: movement.x, y: movement.y };
     }
 
     addEffect(effect: GameEffect): void {
@@ -198,7 +315,14 @@ export async function mountGameRenderer(
         this.clearEntities();
       }
       this.syncPreviewCamera(snapshot);
-      this.reconcileEntities(snapshot.entities, snapshot.seekerPreview);
+      this.reconcileEntities(snapshot.entities, snapshot.seekerPreview, snapshot.serverTime);
+    }
+
+    private canPredictLocalMovement(): boolean {
+      const snapshot = this.snapshot;
+      if (!snapshot || snapshot.self.caught || snapshot.self.locked) return false;
+      if (snapshot.self.role !== "HIDER" && snapshot.self.role !== "SEEKER") return false;
+      return snapshot.phase === "HIDING" || snapshot.phase === "SEEKING";
     }
 
     private rebuildStaticMap(snapshot: GameSnapshot): void {
@@ -261,7 +385,7 @@ export async function mountGameRenderer(
       this.redrawTransients();
     }
 
-    private reconcileEntities(entities: WorldEntity[], seekerPreview: boolean): void {
+    private reconcileEntities(entities: WorldEntity[], seekerPreview: boolean, serverTime: number): void {
       const visibleIds = new Set(entities.map((entity) => entity.id));
       for (const [id, view] of this.entityViews) {
         if (visibleIds.has(id)) continue;
@@ -273,24 +397,36 @@ export async function mountGameRenderer(
       let controlledId = "";
       for (const entity of entities) {
         const signature = entitySignature(entity);
-        const targetX = entity.x * TILE;
-        const targetY = entity.y * TILE;
-        const targetRotation = (entity.rotation * Math.PI) / 180;
+        const sample: MotionSample = {
+          serverTime,
+          x: entity.x * TILE,
+          y: entity.y * TILE,
+          rotation: (entity.rotation * Math.PI) / 180,
+        };
         let view = this.entityViews.get(entity.id);
         if (!view || view.signature !== signature) {
           const previousPosition = view ? { x: view.container.x, y: view.container.y } : undefined;
           const previousRotation = view?.container.rotation;
           view?.container.destroy(true);
           const container = this.drawEntity(entity);
-          container.setPosition(previousPosition?.x ?? targetX, previousPosition?.y ?? targetY);
-          container.setRotation(previousRotation ?? targetRotation);
+          container.setPosition(previousPosition?.x ?? sample.x, previousPosition?.y ?? sample.y);
+          container.setRotation(previousRotation ?? sample.rotation);
           this.entityWorld.add(container);
-          view = { container, signature, targetX, targetY, targetRotation };
+          view = { container, signature, controlled: entity.controlled, samples: [sample] };
           this.entityViews.set(entity.id, view);
         } else {
-          view.targetX = targetX;
-          view.targetY = targetY;
-          view.targetRotation = targetRotation;
+          view.controlled = entity.controlled;
+          const latest = view.samples[view.samples.length - 1];
+          if (!latest || sample.serverTime > latest.serverTime) {
+            if (latest && Math.hypot(sample.x - latest.x, sample.y - latest.y) > PORTAL_SNAP_DISTANCE) {
+              view.samples = [sample];
+              view.container.setPosition(sample.x, sample.y);
+              view.container.setRotation(sample.rotation);
+            } else {
+              view.samples.push(sample);
+              if (view.samples.length > 5) view.samples.shift();
+            }
+          }
         }
         if (entity.controlled) controlledId = entity.id;
       }
@@ -298,7 +434,8 @@ export async function mountGameRenderer(
       if (!seekerPreview && controlledId && controlledId !== this.followedEntityId) {
         const controlled = this.entityViews.get(controlledId)?.container;
         if (controlled) {
-          this.cameras.main.startFollow(controlled, true, 0.28, 0.28);
+          // 카메라는 이미 보간된 개체를 그대로 따라가 이중 지연과 정수 픽셀 튐을 만들지 않는다.
+          this.cameras.main.startFollow(controlled, false, 1, 1);
           this.followedEntityId = controlledId;
         }
       }
@@ -686,6 +823,7 @@ export async function mountGameRenderer(
 
   return {
     pushSnapshot: (snapshot) => scene.setSnapshot(snapshot),
+    setLocalMovement: (movement) => scene.setLocalMovement(movement),
     pushEffect: (effect) => scene.addEffect(effect),
     pushLens: (pulse) => scene.addLens(pulse),
     pushPing: (ping) => scene.addPing(ping),

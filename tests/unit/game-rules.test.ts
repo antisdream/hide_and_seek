@@ -6,6 +6,7 @@ import {
   roundTimingFor,
   seekerCountFor,
   selectSeekers,
+  survivalScoreFor,
   tagCooldown,
 } from "../../shared/game-rules";
 
@@ -21,6 +22,24 @@ test("관찰자 횟수가 적은 이용자를 먼저 선택한다", () => {
   const selected = selectSeekers(players, history, 42);
   assert.equal(selected.size, 2);
   assert.deepEqual([...selected].sort(), ["다", "라"]);
+});
+
+test("직전 라운드 관찰자는 가능한 경우 연속 배정하지 않는다", () => {
+  const players = ["가", "나", "다", "라"];
+  const history = new Map(players.map((player) => [player, 0]));
+  const selected = selectSeekers(players, history, 42, new Set(["가"]));
+  assert.equal(selected.has("가"), false);
+  assert.equal(selected.size, 1);
+});
+
+test("생존 점수는 시간 비율을 20점 단위로 정리한다", () => {
+  const duration = 120_000;
+  assert.equal(survivalScoreFor(1, duration), 20);
+  assert.equal(survivalScoreFor(duration * 0.25, duration), 20);
+  assert.equal(survivalScoreFor(duration * 0.5, duration), 40);
+  assert.equal(survivalScoreFor(duration * 0.75, duration), 60);
+  assert.equal(survivalScoreFor(duration, duration), 80);
+  assert.equal(survivalScoreFor(Number.NaN, duration), 0);
 });
 
 test("대각선 이동 벡터를 정규화하고 비정상 값은 제거한다", () => {

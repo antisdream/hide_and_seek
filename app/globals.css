@@ -247,6 +247,16 @@ button { color: inherit; }
 .mode-grid button > span { grid-row: span 2; width: 34px; height: 34px; display: grid; place-items: center; border-radius: 12px; background: var(--yellow); font-size: 20px; }
 .mode-grid button strong, .mode-grid button small { display: block; }
 .mode-grid button small { color: var(--muted); font-size: 11px; }
+.ai-difficulty-picker { min-width: 0; margin: 16px 0 0; padding: 13px; border: 1px solid #d8d0c5; border-radius: 15px; background: #faf8ff; }
+.ai-difficulty-picker legend { padding: 0 5px; }
+.ai-difficulty-picker legend strong, .ai-difficulty-picker legend small { display: inline; }
+.ai-difficulty-picker legend strong { margin-right: 7px; color: var(--ink); font-size: 12px; }
+.ai-difficulty-picker legend small { color: var(--muted); font-size: 10px; }
+.ai-difficulty-picker > div { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+.ai-difficulty-picker button { min-height: 34px; border: 1px solid #a8a0b3; border-radius: 10px; background: white; color: #625b6f; cursor: pointer; font-size: 11px; font-weight: 900; }
+.ai-difficulty-picker button.active { border: 2px solid var(--blue); background: #eaf0ff; color: #334f9f; }
+.ai-difficulty-picker button:disabled { cursor: wait; opacity: .62; }
+.ai-difficulty-picker p { min-height: 30px; margin: 9px 2px 0; color: var(--muted); font-size: 10px; line-height: 1.45; word-break: keep-all; }
 .join-safety { margin: 17px 0 0; color: #777082; font-size: 11px; text-align: center; }
 .join-quick-guide { margin-top: 18px; padding: 15px 16px; border: 1px solid #d7cfbf; border-radius: 15px; background: #fffbef; }
 .join-quick-guide > strong { color: var(--ink); font-size: 12px; }

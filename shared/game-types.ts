@@ -1,4 +1,5 @@
 export type RoomMode = "public" | "invite" | "practice";
+export type AiDifficulty = "easy" | "normal" | "hard";
 export type GamePhase = "LOBBY" | "COUNTDOWN" | "HIDING" | "SEEKING" | "RESULT" | "FINAL";
 export type PlayerRole = "HIDER" | "SEEKER" | "SPECTATOR";
 export type PropKind = "pencil" | "notebook" | "tape" | "eraser" | "box" | "ribbon";
@@ -84,6 +85,8 @@ export interface PublicPlayer {
   bot: boolean;
   score: number;
   status: "lobby" | "playing" | "caught" | "waiting";
+  /** 결과 화면에서만 공개되는 이번 라운드 생존 점수다. */
+  survivalScore?: number;
   revealedRole?: PlayerRole;
 }
 
@@ -116,6 +119,8 @@ export interface SelfView {
   tagReadyAt: number;
   lensReadyAt: number;
   caught: boolean;
+  /** 로컬 입력 예측에 사용하는 현재 역할의 실제 이동 속도다. */
+  movementSpeed: number;
 }
 
 export interface RoundResult {
@@ -136,6 +141,8 @@ export interface GameSnapshot {
   serverTime: number;
   roomId: string;
   mode: RoomMode;
+  /** AI 방에서 방장이 선택한 공통 난이도다. */
+  aiDifficulty?: AiDifficulty;
   phase: GamePhase;
   phaseEndsAt: number;
   round: number;

@@ -2,12 +2,14 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { Room, ServerError, type AuthContext, type Client } from "@colyseus/core";
 import { z } from "zod";
 import { isAllowedRequestOrigin, SAME_HOST_ORIGIN } from "./origin-policy";
+import { aiProfileFor, isAiDifficulty } from "../shared/ai-rules";
 import { distance, hasLineOfSight, isBlocked } from "../shared/geometry";
 import {
   DEFAULT_RULES,
   normalizeMove,
   roundTimingFor,
   selectSeekers,
+  survivalScoreFor,
   tagCooldown,
 } from "../shared/game-rules";
 import {
@@ -17,6 +19,7 @@ import {
   type GeneratedMap,
 } from "../shared/map-generator";
 import type {
+  AiDifficulty,
   GameEffect,
   GamePhase,
   GameRules,
@@ -52,6 +55,7 @@ const pingSchema = z.object({
 });
 const joinSchema = z.object({
   mode: z.enum(["public", "invite", "practice"]).optional(),
+  aiDifficulty: z.enum(["easy", "normal", "hard"]).optional(),
   displayName: z.string().min(1).max(40),
   deviceId: z.string().min(8).max(120),
 });
@@ -80,6 +84,8 @@ interface InternalPlayer extends Point {
   role: PlayerRole;
   score: number;
   caught: boolean;
+  caughtAt: number;
+  lastSurvivalScore: number;
   rotation: number;
   entityId: string;
   propKind: PropKind;
@@ -97,6 +103,11 @@ interface InternalPlayer extends Point {
   inputY: number;
   mission?: InternalMission;
   botTarget?: Point;
+  botTargetEntityId?: string;
+  botMemoryExpiresAt: number;
+  botThinkAt: number;
+  botActionAt: number;
+  botRouteIndex: number;
 }
 
 interface RecentMove extends Point {
@@ -128,15 +139,19 @@ export class NunchisoomRoom extends Room {
   private readonly players = new Map<string, InternalPlayer>();
   private readonly sessionToPlayer = new Map<string, string>();
   private readonly seekerHistory = new Map<string, number>();
+  private lastRoundSeekerIds = new Set<string>();
+  private preparedSeekerIds = new Set<string>();
   private readonly replay: ReplayBeat[] = [];
   private readonly recentMoves: RecentMove[] = [];
   private runtimeConfig: RuntimeConfig = DEFAULT_RUNTIME_CONFIG;
   private mode: RoomMode = "public";
+  private aiDifficulty: AiDifficulty = "normal";
   private phase: GamePhase = "LOBBY";
   private phaseEndsAt = 0;
   private round = 0;
   private roundPlayerCount = 0;
   private roundSeekingMs = DEFAULT_RULES.seekingMs;
+  private seekingStartedAt = 0;
   private version = 0;
   private hostPlayerId = "";
   private rules: GameRules = DEFAULT_RULES;
@@ -151,11 +166,12 @@ export class NunchisoomRoom extends Room {
     return DEFAULT_RUNTIME_CONFIG;
   }
 
-  async onCreate(options: { mode?: RoomMode }): Promise<void> {
+  async onCreate(options: { mode?: RoomMode; aiDifficulty?: AiDifficulty }): Promise<void> {
     this.runtimeConfig = this.getRuntimeConfig();
     this.mode = options.mode === "invite" || options.mode === "practice" ? options.mode : "public";
+    this.aiDifficulty = isAiDifficulty(options.aiDifficulty) ? options.aiDifficulty : "normal";
     this.rules = this.runtimeConfig.rules;
-    this.maxClients = this.mode === "practice" ? 1 : this.rules.maxPlayers;
+    this.maxClients = this.mode === "practice" ? 4 : this.rules.maxPlayers;
     this.maxMessagesPerSecond = 45;
     this.patchRate = null;
     await this.setPrivate(this.mode !== "public");
@@ -206,6 +222,8 @@ export class NunchisoomRoom extends Room {
       role: "SPECTATOR",
       score: 0,
       caught: false,
+      caughtAt: 0,
+      lastSurvivalScore: 0,
       x: 1.5,
       y: 14.2,
       rotation: 0,
@@ -223,11 +241,16 @@ export class NunchisoomRoom extends Room {
       lastSeq: -1,
       inputX: 0,
       inputY: 0,
+      botMemoryExpiresAt: 0,
+      botThinkAt: 0,
+      botActionAt: 0,
+      botRouteIndex: 0,
     };
     client.userData = { playerId: player.id };
     this.players.set(player.id, player);
     this.sessionToPlayer.set(client.sessionId, player.id);
     if (!this.hostPlayerId) this.hostPlayerId = player.id;
+    this.syncPracticeBots();
     this.version += 1;
     // 입장한 클라이언트는 메시지 수신기를 붙이기 전이므로 기존 참가자에게만 알린다.
     this.broadcast("notice", { label: `${player.displayName} 님이 입장했습니다.` }, { except: client });
@@ -260,7 +283,10 @@ export class NunchisoomRoom extends Room {
     this.sessionToPlayer.delete(client.sessionId);
     this.players.delete(player.id);
     this.seekerHistory.delete(player.id);
+    this.lastRoundSeekerIds.delete(player.id);
+    this.preparedSeekerIds.delete(player.id);
     if (player.id === this.hostPlayerId) this.migrateHost();
+    if (this.phase === "LOBBY" || this.phase === "FINAL") this.syncPracticeBots();
     this.version += 1;
 
     if (this.phase === "COUNTDOWN" && !this.hasEnoughPlayers()) {
@@ -299,6 +325,7 @@ export class NunchisoomRoom extends Room {
       return;
     }
     if (this.phase === "HIDING") {
+      this.seekingStartedAt = now;
       this.setPhase("SEEKING", now + this.roundSeekingMs);
       this.broadcastEffect({ type: "phase", label: `${this.generatedMap.layout.name} 수색이 시작됐습니다.` });
       return;
@@ -318,7 +345,7 @@ export class NunchisoomRoom extends Room {
     const player = this.playerFor(client);
     if (!player) return;
     player.ready = ready;
-    if (this.mode === "practice") this.ensurePracticeBots();
+    if (this.mode === "practice") this.syncPracticeBots();
     this.version += 1;
     if (this.hasEnoughPlayers() && this.humanPlayers().every((entry) => entry.ready)) {
       this.beginCountdown(this.phase === "FINAL");
@@ -328,7 +355,7 @@ export class NunchisoomRoom extends Room {
   private handleStart(client: Client): void {
     const player = this.playerFor(client);
     if (!player || player.id !== this.hostPlayerId) return;
-    if (this.mode === "practice") this.ensurePracticeBots();
+    if (this.mode === "practice") this.syncPracticeBots();
     if (!this.hasEnoughPlayers()) {
       this.sendError(client, "인원 부족", `게임을 시작하려면 ${this.publicMinPlayers()}명이 필요합니다.`);
       return;
@@ -347,10 +374,13 @@ export class NunchisoomRoom extends Room {
       this.matchId = randomUUID();
       this.matchStartedAt = 0;
       this.seekerHistory.clear();
+      this.lastRoundSeekerIds.clear();
+      this.preparedSeekerIds.clear();
       this.replay.splice(0);
       for (const player of this.players.values()) player.score = 0;
     }
     this.result = undefined;
+    this.seekingStartedAt = 0;
     this.prepareRound();
     this.setPhase("COUNTDOWN", Date.now() + this.rules.countdownMs);
     this.broadcastEffect({ type: "phase", label: `${this.round}라운드 역할이 정해졌습니다.` });
@@ -376,9 +406,13 @@ export class NunchisoomRoom extends Room {
     const timing = roundTimingFor(players.length, this.rules);
     this.roundPlayerCount = timing.playerCount;
     this.roundSeekingMs = timing.seekingMs;
-    const seekerIds = this.mode === "practice"
-      ? new Set(this.humanPlayers().slice(0, 1).map((player) => player.id))
-      : selectSeekers(players.map((player) => player.id), this.seekerHistory, seed + this.round);
+    const seekerIds = selectSeekers(
+      players.map((player) => player.id),
+      this.seekerHistory,
+      seed + this.round,
+      this.lastRoundSeekerIds,
+    );
+    this.preparedSeekerIds = new Set(seekerIds);
 
     let hiderIndex = 0;
     let seekerIndex = 0;
@@ -386,6 +420,8 @@ export class NunchisoomRoom extends Room {
       const player = players[index];
       player.role = seekerIds.has(player.id) ? "SEEKER" : "HIDER";
       player.caught = false;
+      player.caughtAt = 0;
+      player.lastSurvivalScore = 0;
       player.ready = player.bot;
       player.entityId = opaqueId("object");
       player.rotation = 0;
@@ -400,6 +436,12 @@ export class NunchisoomRoom extends Room {
       player.inputY = 0;
       player.lastMovedAt = 0;
       player.portalReadyAt = 0;
+      player.botTarget = undefined;
+      player.botTargetEntityId = undefined;
+      player.botMemoryExpiresAt = 0;
+      player.botThinkAt = 0;
+      player.botActionAt = 0;
+      player.botRouteIndex = 0;
       player.propKind = pickPropKind(seed, index);
 
       if (player.role === "SEEKER") {
@@ -409,6 +451,7 @@ export class NunchisoomRoom extends Room {
         player.y = spawn.y;
         this.seekerHistory.set(player.id, (this.seekerHistory.get(player.id) ?? 0) + 1);
         player.mission = undefined;
+        if (player.bot) player.botTarget = this.botPatrolTarget(player);
       } else {
         const spawn = this.generatedMap.hiderSpawns[hiderIndex % this.generatedMap.hiderSpawns.length];
         hiderIndex += 1;
@@ -423,6 +466,7 @@ export class NunchisoomRoom extends Room {
 
   private startRound(now: number): void {
     if (!this.matchStartedAt) this.matchStartedAt = now;
+    this.lastRoundSeekerIds = new Set(this.preparedSeekerIds);
     this.setPhase("HIDING", now + this.rules.hidingMs);
     this.broadcastEffect({
       type: "phase",
@@ -447,6 +491,8 @@ export class NunchisoomRoom extends Room {
     this.round = Math.max(0, this.round - 1);
     this.roundPlayerCount = 0;
     this.roundSeekingMs = this.rules.seekingMs;
+    this.seekingStartedAt = 0;
+    this.preparedSeekerIds.clear();
     this.result = undefined;
   }
 
@@ -462,8 +508,13 @@ export class NunchisoomRoom extends Room {
     for (const player of this.players.values()) {
       player.inputX = 0;
       player.inputY = 0;
+      if (player.role === "HIDER") {
+        const survivedUntil = player.caughtAt || now;
+        const survivedMs = Math.max(0, survivedUntil - this.seekingStartedAt);
+        player.lastSurvivalScore = survivalScoreFor(survivedMs, this.roundSeekingMs);
+        player.score += player.lastSurvivalScore;
+      }
       if (winner === "HIDERS" && player.role === "HIDER") {
-        if (!player.caught) player.score += 80;
         player.score += 50;
       }
       if (winner === "SEEKERS" && player.role === "SEEKER") player.score += 50;
@@ -511,7 +562,7 @@ export class NunchisoomRoom extends Room {
 
     const direction = normalizeMove(player.inputX, player.inputY);
     if (direction.x === 0 && direction.y === 0) return;
-    const speed = player.role === "HIDER" ? this.rules.hiderSpeed : this.rules.seekerSpeed;
+    const speed = this.movementSpeedFor(player);
     const step = speed * (deltaTime / 1_000);
     const nextX = { x: player.x + direction.x * step, y: player.y };
     const nextY = { x: player.x, y: player.y + direction.y * step };
@@ -572,24 +623,190 @@ export class NunchisoomRoom extends Room {
 
   private updateBots(deltaTime: number, now: number): void {
     for (const bot of this.players.values()) {
-      if (!bot.bot || bot.role !== "HIDER" || bot.caught) continue;
-      if (this.phase === "HIDING" && bot.botTarget) {
-        const dx = bot.botTarget.x - bot.x;
-        const dy = bot.botTarget.y - bot.y;
-        if (Math.hypot(dx, dy) < 0.28) {
-          bot.locked = true;
-          continue;
-        }
-        const direction = normalizeMove(dx, dy);
-        bot.inputX = direction.x;
-        bot.inputY = direction.y;
-        this.movePlayer(bot, deltaTime, now);
-      } else if (this.phase === "SEEKING") {
+      if (!bot.bot || bot.caught) continue;
+      this.updateFocus(bot, deltaTime, now);
+      if (bot.role === "HIDER") this.updateHiderBot(bot, deltaTime, now);
+      if (bot.role === "SEEKER") this.updateSeekerBot(bot, deltaTime, now);
+      this.updateMission(bot, deltaTime);
+    }
+  }
+
+  private updateHiderBot(bot: InternalPlayer, deltaTime: number, now: number): void {
+    const profile = aiProfileFor(this.aiDifficulty);
+    if (this.phase === "HIDING") {
+      if (!bot.botTarget) bot.botTarget = this.generatedMap.hiderSpawns[bot.botRouteIndex % this.generatedMap.hiderSpawns.length];
+      if (distance(bot, bot.botTarget) <= 0.32) {
         bot.inputX = 0;
         bot.inputY = 0;
         bot.locked = true;
+        return;
+      }
+      bot.locked = false;
+      this.moveBotToward(bot, bot.botTarget, deltaTime, now);
+      return;
+    }
+
+    if (this.phase !== "SEEKING") {
+      bot.inputX = 0;
+      bot.inputY = 0;
+      return;
+    }
+
+    if (now >= bot.botThinkAt) {
+      bot.botThinkAt = now + profile.thinkIntervalMs;
+      const threat = [...this.players.values()]
+        .filter((player) => player.role === "SEEKER")
+        .map((player) => ({ player, gap: distance(bot, player) }))
+        .filter(({ player, gap }) => gap <= profile.hiderDangerRange && hasLineOfSight(bot, player, this.generatedMap.layout))
+        .sort((a, b) => a.gap - b.gap)[0];
+      if (threat && Math.random() <= profile.hiderEscapeChance) {
+        if (!bot.swapUsed && threat.gap <= this.rules.swapDistance && Math.random() < profile.hiderEscapeChance * 0.45) {
+          this.performSwap(bot);
+        }
+        bot.locked = false;
+        bot.botTarget = this.botEscapeTarget(threat.player);
+        bot.botActionAt = now + profile.escapeDurationMs;
+      } else if (now >= bot.botActionAt) {
+        bot.locked = true;
       }
     }
+
+    if (!bot.locked && bot.botTarget && now < bot.botActionAt) {
+      if (distance(bot, bot.botTarget) <= 0.42) {
+        bot.locked = true;
+        bot.inputX = 0;
+        bot.inputY = 0;
+      } else {
+        this.moveBotToward(bot, bot.botTarget, deltaTime, now);
+      }
+      return;
+    }
+    bot.inputX = 0;
+    bot.inputY = 0;
+  }
+
+  private updateSeekerBot(bot: InternalPlayer, deltaTime: number, now: number): void {
+    if (this.phase !== "HIDING" && this.phase !== "SEEKING") {
+      bot.inputX = 0;
+      bot.inputY = 0;
+      return;
+    }
+    const profile = aiProfileFor(this.aiDifficulty);
+
+    if (this.phase === "SEEKING" && now >= bot.botThinkAt) {
+      bot.botThinkAt = now + profile.thinkIntervalMs;
+      const noticed = [...this.players.values()]
+        .filter((player) => player.role === "HIDER" && !player.caught)
+        .map((player) => ({
+          player,
+          gap: distance(bot, player),
+          movedRecently: now - player.lastMovedAt <= profile.memoryMs,
+        }))
+        .filter(({ player, gap }) => gap <= profile.perceptionRange && hasLineOfSight(bot, player, this.generatedMap.layout))
+        .filter(({ gap, movedRecently }) => {
+          const chance = movedRecently
+            ? profile.movingRecognitionChance
+            : gap <= this.rules.tagDistance * 1.6
+              ? profile.stillRecognitionChance
+              : 0;
+          return Math.random() <= chance;
+        })
+        .sort((a, b) => Number(b.movedRecently) - Number(a.movedRecently) || a.gap - b.gap)[0]?.player;
+
+      if (noticed) {
+        bot.botTargetEntityId = noticed.entityId;
+        bot.botTarget = { x: noticed.x, y: noticed.y };
+        bot.botMemoryExpiresAt = now + profile.memoryMs;
+        bot.botActionAt = now + profile.reactionMs;
+      } else if (!bot.botTargetEntityId || now >= bot.botMemoryExpiresAt) {
+        bot.botTargetEntityId = undefined;
+        const nearbyProps = this.staticProps
+          .map((prop) => ({ prop, gap: distance(bot, prop) }))
+          .filter(({ gap }) => gap <= profile.perceptionRange)
+          .sort((a, b) => a.gap - b.gap);
+        if (nearbyProps.length > 0 && Math.random() < profile.falseInspectionChance) {
+          const chosen = nearbyProps[Math.floor(Math.random() * Math.min(5, nearbyProps.length))].prop;
+          bot.botTargetEntityId = chosen.id;
+          bot.botTarget = { x: chosen.x, y: chosen.y };
+          bot.botMemoryExpiresAt = now + profile.memoryMs;
+          bot.botActionAt = now + profile.reactionMs;
+        } else if (!bot.botTarget || distance(bot, bot.botTarget) <= 0.7) {
+          bot.botTarget = this.botPatrolTarget(bot);
+        }
+      }
+    }
+
+    if (bot.botTargetEntityId) {
+      const hider = [...this.players.values()].find(
+        (player) => player.entityId === bot.botTargetEntityId && player.role === "HIDER" && !player.caught,
+      );
+      const prop = this.staticProps.find((entry) => entry.id === bot.botTargetEntityId);
+      const target = hider ?? prop;
+      const canSeeTarget = Boolean(
+        target && distance(bot, target) <= profile.perceptionRange && hasLineOfSight(bot, target, this.generatedMap.layout),
+      );
+      if (hider && canSeeTarget) {
+        bot.botTarget = { x: hider.x, y: hider.y };
+        bot.botMemoryExpiresAt = now + profile.memoryMs;
+      }
+      if (!target || (!canSeeTarget && now >= bot.botMemoryExpiresAt)) {
+        bot.botTargetEntityId = undefined;
+        bot.botTarget = this.botPatrolTarget(bot);
+      } else if (distance(bot, target) <= this.rules.tagDistance && now >= bot.botActionAt) {
+        this.attemptTag(bot, bot.botTargetEntityId, now);
+        bot.botTargetEntityId = undefined;
+        bot.botTarget = this.botPatrolTarget(bot);
+        bot.botThinkAt = now + profile.thinkIntervalMs;
+      }
+    }
+
+    if (!bot.botTarget || distance(bot, bot.botTarget) <= 0.6) bot.botTarget = this.botPatrolTarget(bot);
+    bot.locked = false;
+    this.moveBotToward(bot, bot.botTarget, deltaTime, now);
+  }
+
+  /** 선반을 만나면 각도를 조금씩 바꿔 미끄러지듯 우회한다. */
+  private moveBotToward(bot: InternalPlayer, target: Point, deltaTime: number, now: number): void {
+    const base = Math.atan2(target.y - bot.y, target.x - bot.x);
+    const before = { x: bot.x, y: bot.y };
+    for (const offset of [0, 0.42, -0.42, 0.82, -0.82, 1.35, -1.35]) {
+      bot.inputX = Math.cos(base + offset);
+      bot.inputY = Math.sin(base + offset);
+      this.movePlayer(bot, deltaTime, now);
+      if (distance(before, bot) > 0.001) return;
+    }
+    bot.inputX = 0;
+    bot.inputY = 0;
+    bot.botTarget = this.botPatrolTarget(bot);
+  }
+
+  private botPatrolTarget(bot: InternalPlayer): Point {
+    const waypoints: Point[] = [
+      ...this.generatedMap.layout.zones,
+      ...this.generatedMap.layout.portals,
+      ...this.generatedMap.hiderSpawns.slice(0, 6),
+    ];
+    const identityOffset = [...bot.id].reduce((sum, character) => sum + character.charCodeAt(0), 0);
+    const target = waypoints[(identityOffset + bot.botRouteIndex + this.round) % waypoints.length];
+    bot.botRouteIndex += 1;
+    return { x: target.x, y: target.y };
+  }
+
+  private botEscapeTarget(seeker: InternalPlayer): Point {
+    const candidates: Point[] = [
+      ...this.generatedMap.hiderSpawns,
+      ...this.generatedMap.layout.zones,
+      ...this.generatedMap.layout.portals.map((portal) => ({ x: portal.x, y: portal.y })),
+    ];
+    const best = candidates.sort((a, b) => distance(seeker, b) - distance(seeker, a))[0];
+    return { x: best.x, y: best.y };
+  }
+
+  private movementSpeedFor(player: InternalPlayer): number {
+    const base = player.role === "HIDER" ? this.rules.hiderSpeed : this.rules.seekerSpeed;
+    if (!player.bot) return base;
+    const profile = aiProfileFor(this.aiDifficulty);
+    return base * (player.role === "HIDER" ? profile.hiderSpeedMultiplier : profile.seekerSpeedMultiplier);
   }
 
   private handleMove(client: Client, message: MoveMessage): void {
@@ -617,15 +834,17 @@ export class NunchisoomRoom extends Room {
     const player = this.playerFor(client);
     if (!player || player.role !== "HIDER" || player.caught || player.swapUsed) return;
     if (this.phase !== "HIDING" && this.phase !== "SEEKING") return;
+    if (this.performSwap(player)) return;
+    this.sendError(client, "자리바꿈 실패", "가까이에 같은 종류의 사물이 없습니다.");
+  }
+
+  private performSwap(player: InternalPlayer): boolean {
     const target = this.staticProps
       .filter((prop) => prop.kind === player.propKind)
       .map((prop) => ({ prop, gap: distance(player, prop) }))
       .filter(({ gap }) => gap <= this.rules.swapDistance)
       .sort((a, b) => a.gap - b.gap)[0]?.prop;
-    if (!target) {
-      this.sendError(client, "자리바꿈 실패", "가까이에 같은 종류의 사물이 없습니다.");
-      return;
-    }
+    if (!target) return false;
     const previous = { x: player.x, y: player.y, rotation: player.rotation };
     player.x = target.x;
     player.y = target.y;
@@ -644,6 +863,7 @@ export class NunchisoomRoom extends Room {
     };
     if (this.phase === "HIDING") this.broadcastEffect(swapEffect, "HIDER");
     else this.broadcastEffect(swapEffect);
+    return true;
   }
 
   private handleTag(client: Client, message: TagMessage): void {
@@ -652,29 +872,37 @@ export class NunchisoomRoom extends Room {
     if (!seeker || seeker.role !== "SEEKER" || seeker.caught || this.phase !== "SEEKING") return;
     if (message.seq <= seeker.lastSeq) return;
     seeker.lastSeq = message.seq;
+    this.attemptTag(seeker, message.entityId, now, client);
+  }
+
+  private attemptTag(seeker: InternalPlayer, entityId: string, now: number, client?: Client): boolean {
+    if (seeker.role !== "SEEKER" || seeker.caught || this.phase !== "SEEKING") return false;
     if (now < seeker.tagReadyAt || seeker.focus <= 0) {
-      const waitSeconds = Math.max(0.1, Math.ceil((seeker.tagReadyAt - now) / 100) / 10);
-      this.sendError(client, "확인 대기", `확인 스티커 재사용까지 ${waitSeconds.toFixed(1)}초 남았습니다.`);
-      return;
+      if (client) {
+        const waitSeconds = Math.max(0.1, Math.ceil((seeker.tagReadyAt - now) / 100) / 10);
+        this.sendError(client, "확인 대기", `확인 스티커 재사용까지 ${waitSeconds.toFixed(1)}초 남았습니다.`);
+      }
+      return false;
     }
 
     const targetHider = [...this.players.values()].find(
-      (player) => player.entityId === message.entityId && player.role === "HIDER" && !player.caught,
+      (player) => player.entityId === entityId && player.role === "HIDER" && !player.caught,
     );
-    const targetProp = this.staticProps.find((prop) => prop.id === message.entityId);
+    const targetProp = this.staticProps.find((prop) => prop.id === entityId);
     const target = targetHider ?? targetProp;
     if (!target || distance(seeker, target) > this.rules.tagDistance) {
-      this.sendError(client, "태그 범위", "스티커를 붙이려면 사물에 조금 더 가까이 가야 합니다.");
-      return;
+      if (client) this.sendError(client, "태그 범위", "스티커를 붙이려면 사물에 조금 더 가까이 가야 합니다.");
+      return false;
     }
     if (!hasLineOfSight(seeker, target, this.generatedMap.layout)) {
-      this.sendError(client, "시야 가림", "선반 너머의 사물에는 스티커를 붙일 수 없습니다.");
-      return;
+      if (client) this.sendError(client, "시야 가림", "선반 너머의 사물에는 스티커를 붙일 수 없습니다.");
+      return false;
     }
 
     seeker.lastTagAt = now;
     if (targetHider) {
       targetHider.caught = true;
+      targetHider.caughtAt = now;
       targetHider.inputX = 0;
       targetHider.inputY = 0;
       seeker.focus = Math.min(100, seeker.focus + 10);
@@ -683,17 +911,21 @@ export class NunchisoomRoom extends Room {
       this.addReplay("tag", `${seeker.displayName} 님이 ${targetHider.displayName} 님을 찾아냈습니다.`);
       this.broadcastEffect({ type: "correct-tag", x: targetHider.x, y: targetHider.y, label: "정확한 확인 스티커!" });
       this.checkAllCaught();
+      return true;
     } else {
       seeker.focus = Math.max(0, seeker.focus - this.rules.wrongTagPenalty);
       seeker.tagReadyAt = now + tagCooldown(seeker.focus, false, this.rules);
       this.addReplay("wrong-tag", `${seeker.displayName} 님이 평범한 사물을 의심했습니다.`);
-      client.send("effect", {
+      const effect = {
         id: opaqueId("effect"),
         type: seeker.focus <= 0 ? "focus-empty" : "wrong-tag",
         x: target.x,
         y: target.y,
         label: seeker.focus <= 0 ? "집중력 소진 — 잠시 관찰만 가능" : "평범한 사물입니다.",
-      } satisfies GameEffect);
+      } satisfies GameEffect;
+      if (client) client.send("effect", effect);
+      else this.broadcast("effect", effect);
+      return false;
     }
   }
 
@@ -766,6 +998,7 @@ export class NunchisoomRoom extends Room {
         bot: player.bot,
         score: this.phase === "HIDING" || this.phase === "SEEKING" ? 0 : player.score,
         status: this.playerStatus(player),
+        ...(revealRoles && player.role === "HIDER" ? { survivalScore: player.lastSurvivalScore } : {}),
         ...(revealRoles ? { revealedRole: player.role } : {}),
       }));
 
@@ -829,6 +1062,7 @@ export class NunchisoomRoom extends Room {
       serverTime: now,
       roomId: this.roomId,
       mode: this.mode,
+      ...(this.mode === "practice" ? { aiDifficulty: this.aiDifficulty } : {}),
       phase: this.phase,
       phaseEndsAt: this.phaseEndsAt,
       round: this.round,
@@ -852,6 +1086,7 @@ export class NunchisoomRoom extends Room {
         tagReadyAt: viewer.tagReadyAt,
         lensReadyAt: viewer.lensReadyAt,
         caught: viewer.caught,
+        movementSpeed: this.movementSpeedFor(viewer),
       },
       players,
       entities,
@@ -916,13 +1151,29 @@ export class NunchisoomRoom extends Room {
     return this.mode === "practice" ? 1 : this.rules.minPlayers;
   }
 
-  private ensurePracticeBots(): void {
-    if (this.mode !== "practice" || [...this.players.values()].some((player) => player.bot)) return;
+  /** AI 방은 사람 수가 바뀌어도 사람+AI 합계 네 명을 유지한다. */
+  private syncPracticeBots(): void {
+    if (this.mode !== "practice") return;
+    const targetBotCount = Math.max(0, 4 - this.humanPlayers().length);
+    const currentBots = [...this.players.values()].filter((player) => player.bot);
+    while (currentBots.length > targetBotCount) {
+      const removed = currentBots.pop();
+      if (!removed) break;
+      this.players.delete(removed.id);
+      this.seekerHistory.delete(removed.id);
+      this.lastRoundSeekerIds.delete(removed.id);
+      this.preparedSeekerIds.delete(removed.id);
+    }
+
     const names = ["몽글", "콩콩", "반짝"];
-    for (let index = 0; index < 3; index += 1) {
+    const usedNames = new Set([...this.players.values()].map((player) => player.displayName));
+    while (currentBots.length < targetBotCount) {
+      const index = currentBots.length;
+      const name = names.find((candidate) => !usedNames.has(candidate)) ?? `별콩${index + 1}`;
+      usedNames.add(name);
       const bot: InternalPlayer = {
         id: opaqueId("bot"),
-        displayName: names[index],
+        displayName: name,
         avatar: avatarAt(index + 2),
         joinedAt: Date.now() + index,
         ready: true,
@@ -931,6 +1182,8 @@ export class NunchisoomRoom extends Room {
         role: "HIDER",
         score: 0,
         caught: false,
+        caughtAt: 0,
+        lastSurvivalScore: 0,
         x: 10 + index,
         y: 8,
         rotation: 0,
@@ -948,8 +1201,13 @@ export class NunchisoomRoom extends Room {
         lastSeq: -1,
         inputX: 0,
         inputY: 0,
+        botMemoryExpiresAt: 0,
+        botThinkAt: 0,
+        botActionAt: 0,
+        botRouteIndex: 0,
       };
       this.players.set(bot.id, bot);
+      currentBots.push(bot);
     }
   }
 
