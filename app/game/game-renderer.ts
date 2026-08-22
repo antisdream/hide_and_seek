@@ -20,6 +20,8 @@ export interface LensPulse {
 export interface GameRenderer {
   pushSnapshot: (snapshot: GameSnapshot) => void;
   setLocalMovement: (movement: Point) => void;
+  /** 키를 놓거나 위치를 고정하는 순간 서버에 안전하게 제안할 현재 화면 좌표다. */
+  getLocalPosition: () => Point | undefined;
   pushEffect: (effect: GameEffect) => void;
   pushLens: (pulse: LensPulse) => void;
   pushPing: (ping: TeamPing) => void;
@@ -64,6 +66,7 @@ const MOVEMENT_RESPONSE_MS = 28;
 const REMOTE_INTERPOLATION_DELAY_MS = 75;
 const MAX_EXTRAPOLATION_MS = 66;
 const LOCAL_RECONCILIATION_DEAD_ZONE = TILE * 0.55;
+const LOCAL_STOP_DEAD_ZONE = TILE * 0.08;
 const MAX_LOCAL_CORRECTION_AT_60_FPS = TILE * 0.08;
 const PORTAL_SNAP_DISTANCE = TILE * 4;
 
@@ -157,6 +160,7 @@ export function reconcileLocalPosition(
   deltaMs: number,
   map: MapLayout,
   input: Point = { x: 0, y: 0 },
+  stationaryDeadZone = 0,
 ): Point {
   let errorX = authority.x - display.x;
   let errorY = authority.y - display.y;
@@ -171,7 +175,7 @@ export function reconcileLocalPosition(
   }
   const gap = Math.hypot(errorX, errorY);
   const moving = inputLength > 0;
-  const deadZone = moving ? LOCAL_RECONCILIATION_DEAD_ZONE : 0;
+  const deadZone = moving ? LOCAL_RECONCILIATION_DEAD_ZONE : Math.max(0, stationaryDeadZone);
   if (gap <= deadZone) return { ...display };
   const responseMs = moving ? (gap > TILE * 2 ? 120 : 260) : 120;
   const blend = movementSmoothingBlend(deltaMs, responseMs);
@@ -306,7 +310,24 @@ export async function mountGameRenderer(
 
         if (view.controlled) {
           if (!this.canPredictLocalMovement()) {
-            view.container.setPosition(latest.x, latest.y);
+            const lockedInActiveRound = Boolean(
+              this.snapshot?.self.locked
+              && (this.snapshot.phase === "HIDING" || this.snapshot.phase === "SEEKING"),
+            );
+            if (lockedInActiveRound) {
+              // 위치 고정 응답이 오는 프레임에 과거 서버 좌표로 순간이동하지 않도록 작은 차이는 유지한다.
+              const reconciled = reconcileLocalPosition(
+                { x: view.container.x, y: view.container.y },
+                latest,
+                delta,
+                this.snapshot!.map,
+                { x: 0, y: 0 },
+                LOCAL_STOP_DEAD_ZONE,
+              );
+              view.container.setPosition(reconciled.x, reconciled.y);
+            } else {
+              view.container.setPosition(latest.x, latest.y);
+            }
             view.container.setRotation(latest.rotation);
             continue;
           }
@@ -337,6 +358,8 @@ export async function mountGameRenderer(
               authority,
               delta,
               this.snapshot!.map,
+              { x: 0, y: 0 },
+              LOCAL_STOP_DEAD_ZONE,
             );
             view.container.setPosition(reconciled.x, reconciled.y);
           }
@@ -368,6 +391,14 @@ export async function mountGameRenderer(
         this.localMovementChangedAt = Date.now();
       }
       this.localMovement = { x: movement.x, y: movement.y };
+    }
+
+    getLocalPosition(): Point | undefined {
+      for (const view of this.entityViews.values()) {
+        if (!view.controlled) continue;
+        return { x: view.container.x / TILE, y: view.container.y / TILE };
+      }
+      return undefined;
     }
 
     addEffect(effect: GameEffect): void {
@@ -1056,6 +1087,7 @@ export async function mountGameRenderer(
   return {
     pushSnapshot: (snapshot) => scene.setSnapshot(snapshot),
     setLocalMovement: (movement) => scene.setLocalMovement(movement),
+    getLocalPosition: () => scene.getLocalPosition(),
     pushEffect: (effect) => scene.addEffect(effect),
     pushLens: (pulse) => scene.addLens(pulse),
     pushPing: (ping) => scene.addPing(ping),

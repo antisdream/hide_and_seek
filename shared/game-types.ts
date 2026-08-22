@@ -179,6 +179,9 @@ export interface MoveMessage {
   seq: number;
   x: number;
   y: number;
+  /** 키를 놓은 순간 화면에 보이던 좌표다. 서버는 이동 한도와 충돌을 다시 검사한 뒤에만 사용한다. */
+  anchorX?: number;
+  anchorY?: number;
 }
 
 export interface TagMessage {

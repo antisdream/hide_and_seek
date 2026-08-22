@@ -3,6 +3,7 @@ import test from "node:test";
 import { ColyseusSDK, type Room } from "@colyseus/sdk";
 import { FAST_TEST_RULES } from "../../shared/game-rules";
 import type { GameEffect, GameSnapshot, LobbyChatMessage } from "../../shared/game-types";
+import { distance, moveWithCollisions } from "../../shared/geometry";
 import { MAP_CATALOG } from "../../shared/map-generator";
 import { createNunchisoomServer } from "../../server/index";
 
@@ -914,6 +915,154 @@ test("위치 고정은 이동 heartbeat를 막고 전역 자리바꿈은 술래�
     await runtime.shutdown();
   }
 });
+
+test("이동 종료와 위치 고정은 화면에서 본 정지 좌표를 서버의 안전한 좌표로 확정한다", { timeout: 15_000 }, async () => {
+  const runtime = createNunchisoomServer({
+    allowedOrigins: [],
+    databasePath: ":memory:",
+    rules: {
+      ...FAST_TEST_RULES,
+      countdownMs: 80,
+      hidingMs: 4_000,
+      seekingMs: 1_500,
+      resultMs: 80,
+    },
+    greet: false,
+  });
+  const rooms: Room[] = [];
+  try {
+    const port = await runtime.listen(0);
+    const clients = Array.from({ length: 4 }, () => new ColyseusSDK(`http://127.0.0.1:${port}`));
+    for (let index = 0; index < clients.length; index += 1) {
+      const joinedRoom = await clients[index].joinOrCreate("nunchisoom", {
+        mode: "public",
+        displayName: `정지좌표검증자${index + 1}`,
+        deviceId: `stop-anchor-device-${index + 1}`,
+      });
+      registerExpectedMessages(joinedRoom);
+      rooms.push(joinedRoom);
+    }
+
+    const hidingPromises = rooms.map((room) => waitForSnapshot(room, (state) => state.phase === "HIDING"));
+    for (const room of rooms) room.send("ready", true);
+    await waitForSnapshot(rooms[0], (state) => state.phase === "LOBBY" && state.canStart);
+    rooms[0].send("start", true);
+    const hidingStates = await Promise.all(hidingPromises);
+    const hiderIndex = hidingStates.findIndex((state) => state.self.role === "HIDER");
+    assert.ok(hiderIndex >= 0);
+    const hiderRoom = rooms[hiderIndex];
+    let current = hidingStates[hiderIndex];
+    let sequence = 1;
+
+    const firstStart = controlledEntity(current);
+    const firstPlan = safestAnchorPlan(current, firstStart);
+    hiderRoom.send("move", { seq: sequence++, ...firstPlan.direction });
+    current = await waitForSnapshot(hiderRoom, (state) => {
+      const entity = state.entities.find((candidate) => candidate.controlled);
+      return state.phase === "HIDING" && Boolean(entity && distance(entity, firstStart) > 0.08);
+    });
+    const beforeStop = controlledEntity(current);
+    const stopPlan = safestAnchorPlan(current, beforeStop);
+    if (stopPlan.direction.x !== firstPlan.direction.x || stopPlan.direction.y !== firstPlan.direction.y) {
+      hiderRoom.send("move", { seq: sequence++, ...stopPlan.direction });
+      current = await waitForSnapshot(
+        hiderRoom,
+        (state) => state.phase === "HIDING" && state.serverTime >= current.serverTime + 80,
+      );
+    }
+    const stopOrigin = controlledEntity(current);
+    const stopAnchor = moveWithCollisions(
+      stopOrigin,
+      stopPlan.direction,
+      current.self.movementSpeed,
+      120,
+      current.map,
+    );
+    assert.ok(distance(stopOrigin, stopAnchor) > 0.2, "정지 좌표 검증에 충분한 자유 공간이 필요합니다.");
+    hiderRoom.send("move", {
+      seq: sequence++,
+      x: 0,
+      y: 0,
+      anchorX: stopAnchor.x,
+      anchorY: stopAnchor.y,
+    });
+    const stopped = await waitForSnapshot(
+      hiderRoom,
+      (state) => state.phase === "HIDING" && state.serverTime >= current.serverTime + 220,
+    );
+    const stoppedEntity = controlledEntity(stopped);
+    assert.ok(
+      distance(stoppedEntity, stopAnchor) < 0.08,
+      `키를 놓은 좌표가 ${distance(stoppedEntity, stopAnchor).toFixed(3)}칸 어긋났습니다.`,
+    );
+
+    const lockPlan = safestAnchorPlan(stopped, stoppedEntity);
+    hiderRoom.send("move", { seq: sequence++, ...lockPlan.direction });
+    const beforeLock = await waitForSnapshot(hiderRoom, (state) => {
+      const entity = state.entities.find((candidate) => candidate.controlled);
+      return state.phase === "HIDING" && Boolean(entity && distance(entity, stoppedEntity) > 0.08);
+    });
+    const lockOrigin = controlledEntity(beforeLock);
+    const finalLockPlan = safestAnchorPlan(beforeLock, lockOrigin);
+    const lockAnchor = moveWithCollisions(
+      lockOrigin,
+      finalLockPlan.direction,
+      beforeLock.self.movementSpeed,
+      120,
+      beforeLock.map,
+    );
+    assert.ok(distance(lockOrigin, lockAnchor) > 0.2, "위치 고정 검증에 충분한 자유 공간이 필요합니다.");
+    if (finalLockPlan.direction.x !== lockPlan.direction.x || finalLockPlan.direction.y !== lockPlan.direction.y) {
+      hiderRoom.send("move", { seq: sequence++, ...finalLockPlan.direction });
+    }
+    hiderRoom.send("move", {
+      seq: sequence++,
+      x: 0,
+      y: 0,
+      anchorX: lockAnchor.x,
+      anchorY: lockAnchor.y,
+    });
+    hiderRoom.send("lock", true);
+    const locked = await waitForSnapshot(
+      hiderRoom,
+      (state) => state.phase === "HIDING" && state.self.locked,
+    );
+    const lockedEntity = controlledEntity(locked);
+    assert.ok(
+      distance(lockedEntity, lockAnchor) < 0.08,
+      `위치 고정 좌표가 ${distance(lockedEntity, lockAnchor).toFixed(3)}칸 어긋났습니다.`,
+    );
+
+    hiderRoom.send("move", { seq: sequence++, x: -1, y: 1 });
+    const held = await waitForSnapshot(
+      hiderRoom,
+      (state) => state.phase === "HIDING" && state.self.locked && state.serverTime >= locked.serverTime + 220,
+    );
+    assert.ok(distance(controlledEntity(held), lockedEntity) < 0.001);
+  } finally {
+    await Promise.allSettled(rooms.map((room) => room.leave(true)));
+    await runtime.shutdown();
+  }
+});
+
+function controlledEntity(snapshot: GameSnapshot) {
+  const entity = snapshot.entities.find((candidate) => candidate.controlled);
+  assert.ok(entity);
+  return entity;
+}
+
+function safestAnchorPlan(snapshot: GameSnapshot, origin: { x: number; y: number }) {
+  const candidates = [
+    { x: 1, y: 0 },
+    { x: -1, y: 0 },
+    { x: 0, y: 1 },
+    { x: 0, y: -1 },
+  ].map((direction) => ({
+    direction,
+    target: moveWithCollisions(origin, direction, snapshot.self.movementSpeed, 120, snapshot.map),
+  }));
+  return candidates.sort((a, b) => distance(origin, b.target) - distance(origin, a.target))[0];
+}
 
 function registerExpectedMessages(room: Room): void {
   room.onMessage<GameSnapshot>("state", () => {});

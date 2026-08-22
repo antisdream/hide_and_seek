@@ -8,6 +8,7 @@ import {
   hasLineOfSight,
   isBlocked,
   MAX_MOVEMENT_DELTA_MS,
+  moveByVectorWithCollisions,
   moveWithCollisions,
   PLAYER_COLLISION_RADIUS,
 } from "../shared/geometry";
@@ -54,6 +55,8 @@ const moveSchema = z.object({
   seq: z.number().int().min(0).max(2_147_483_647),
   x: z.number().min(-1).max(1),
   y: z.number().min(-1).max(1),
+  anchorX: z.number().min(-1_000).max(1_000).optional(),
+  anchorY: z.number().min(-1_000).max(1_000).optional(),
 });
 const tagSchema = z.object({
   seq: z.number().int().min(0).max(2_147_483_647),
@@ -115,6 +118,8 @@ interface InternalPlayer extends Point {
   lastSeq: number;
   inputX: number;
   inputY: number;
+  /** 클라이언트 정지 좌표 보정이 실제 이동속도를 넘지 않게 하는 마지막 적용 시각이다. */
+  lastClientAnchorAt: number;
   mission?: InternalMission;
   botTarget?: Point;
   botTargetEntityId?: string;
@@ -265,6 +270,7 @@ export class NunchisoomRoom extends Room {
       lastSeq: -1,
       inputX: 0,
       inputY: 0,
+      lastClientAnchorAt: Date.now(),
       botMemoryExpiresAt: 0,
       botThinkAt: 0,
       botActionAt: 0,
@@ -483,6 +489,7 @@ export class NunchisoomRoom extends Room {
       player.lastSeq = -1;
       player.inputX = 0;
       player.inputY = 0;
+      player.lastClientAnchorAt = Date.now();
       player.lastMovedAt = 0;
       player.portalReadyAt = 0;
       player.teleportRevision = 0;
@@ -875,8 +882,57 @@ export class NunchisoomRoom extends Room {
       return;
     }
     const normalized = normalizeMove(message.x, message.y);
+    const wasMoving = Math.hypot(player.inputX, player.inputY) > 0;
+    const stopping = normalized.x === 0 && normalized.y === 0;
+    if (
+      wasMoving
+      && stopping
+      && message.anchorX !== undefined
+      && message.anchorY !== undefined
+    ) {
+      this.applyClientStopAnchor(player, { x: message.anchorX, y: message.anchorY }, Date.now());
+    }
     player.inputX = normalized.x;
     player.inputY = normalized.y;
+  }
+
+  /**
+   * 화면 예측이 서버보다 조금 앞선 상태에서 키를 놓아도 보이던 자리에서 멈추게 한다.
+   * 요청 좌표를 그대로 신뢰하지 않고 경과 시간×실제 속도로 거리를 제한한 뒤 공용 충돌 계산을 다시 적용한다.
+   */
+  private applyClientStopAnchor(player: InternalPlayer, requested: Point, now: number): void {
+    const canMove =
+      (player.role === "HIDER" || player.role === "SEEKER")
+      && (this.phase === "HIDING" || this.phase === "SEEKING")
+      && !player.caught
+      && !player.locked;
+    if (!canMove || !Number.isFinite(requested.x) || !Number.isFinite(requested.y)) return;
+
+    const elapsedMs = Math.max(0, Math.min(200, now - player.lastClientAnchorAt));
+    player.lastClientAnchorAt = now;
+    const maximumDistance = this.movementSpeedFor(player) * (elapsedMs / 1_000);
+    if (maximumDistance <= 0) return;
+
+    const requestedMovement = { x: requested.x - player.x, y: requested.y - player.y };
+    const requestedDistance = Math.hypot(requestedMovement.x, requestedMovement.y);
+    if (!Number.isFinite(requestedDistance) || requestedDistance <= 0.000_001) return;
+    const ratio = Math.min(1, maximumDistance / requestedDistance);
+    const before = { x: player.x, y: player.y };
+    const next = moveByVectorWithCollisions(
+      player,
+      { x: requestedMovement.x * ratio, y: requestedMovement.y * ratio },
+      this.generatedMap.layout,
+    );
+    player.x = next.x;
+    player.y = next.y;
+    if (distance(before, player) < 0.001) return;
+
+    player.rotation = Math.round((Math.atan2(requestedMovement.y, requestedMovement.x) * 180) / Math.PI);
+    player.lastMovedAt = now;
+    this.applyPortal(player, now);
+    if (player.role === "HIDER") {
+      this.recentMoves.push({ playerId: player.id, x: player.x, y: player.y, at: now });
+    }
   }
 
   private handleLock(client: Client, locked: boolean): void {
@@ -1287,6 +1343,7 @@ export class NunchisoomRoom extends Room {
       lastSeq: -1,
       inputX: 0,
       inputY: 0,
+      lastClientAnchorAt: now,
       botMemoryExpiresAt: 0,
       botThinkAt: 0,
       botActionAt: 0,

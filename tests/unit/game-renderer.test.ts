@@ -119,6 +119,19 @@ test("정지 중 큰 서버 오차도 한 프레임에 순간이동하지 않고
   assert.equal(corrected.y, 80);
 });
 
+test("키를 놓거나 위치를 고정한 뒤 3.2px 이하의 좌표 차이로 다시 끌려가지 않는다", () => {
+  const display = { x: 200, y: 160 };
+  const corrected = reconcileLocalPosition(
+    display,
+    { x: 203, y: 160 },
+    16,
+    EMPTY_TEST_MAP,
+    { x: 0, y: 0 },
+    3.2,
+  );
+  assert.deepEqual(corrected, display);
+});
+
 test("이동 중에는 누르고 있는 방향의 반대로 권위 좌표를 따라가지 않는다", () => {
   const display = { x: 400, y: 80 };
   const corrected = reconcileLocalPosition(display, { x: 40, y: 80 }, 16, EMPTY_TEST_MAP, { x: 1, y: 0 });

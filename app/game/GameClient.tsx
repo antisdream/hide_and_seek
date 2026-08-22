@@ -9,7 +9,9 @@ import type {
   GamePhase,
   GameSnapshot,
   LobbyChatMessage,
+  MoveMessage,
   PingKind,
+  Point,
   RoomMode,
   TeamPing,
 } from "../../shared/game-types";
@@ -52,6 +54,7 @@ export default function GameClient() {
   const roomRef = useRef<Room | undefined>(undefined);
   const sequenceRef = useRef(0);
   const pressedKeysRef = useRef(new Set<string>());
+  const lastSentMovementRef = useRef<Point>({ x: 0, y: 0 });
   const snapshotRef = useRef<GameSnapshot | undefined>(undefined);
   const localMovementLockedRef = useRef(false);
   const pendingLockRef = useRef<{ locked: boolean; requestedAt: number } | undefined>(undefined);
@@ -68,7 +71,21 @@ export default function GameClient() {
     rendererRef.current?.setLocalMovement(direction);
     const activeRoom = roomRef.current;
     if (!activeRoom) return;
-    activeRoom.send("move", { seq: nextSequence(sequenceRef), ...direction });
+    const previous = lastSentMovementRef.current;
+    const message: MoveMessage = { seq: nextSequence(sequenceRef), ...direction };
+    if (
+      direction.x === 0
+      && direction.y === 0
+      && Math.hypot(previous.x, previous.y) > 0
+    ) {
+      const anchor = rendererRef.current?.getLocalPosition();
+      if (anchor) {
+        message.anchorX = anchor.x;
+        message.anchorY = anchor.y;
+      }
+    }
+    activeRoom.send("move", message);
+    lastSentMovementRef.current = direction;
   }, []);
 
   const publishHudSnapshot = useCallback((nextSnapshot: GameSnapshot) => {
@@ -96,6 +113,7 @@ export default function GameClient() {
     }
     if (localMovementLockedRef.current || nextSnapshot.self.caught) {
       pressedKeysRef.current.clear();
+      lastSentMovementRef.current = { x: 0, y: 0 };
       rendererRef.current?.setLocalMovement({ x: 0, y: 0 });
     }
     const key = hudSemanticKey(nextSnapshot);
@@ -218,9 +236,13 @@ export default function GameClient() {
       pressedKeys.clear();
       sendMovementNow();
     };
+    const releaseHiddenKeys = () => {
+      if (document.visibilityState === "hidden") releaseKeys();
+    };
     window.addEventListener("keydown", keyDown);
     window.addEventListener("keyup", keyUp);
     window.addEventListener("blur", releaseKeys);
+    document.addEventListener("visibilitychange", releaseHiddenKeys);
 
     const sender = window.setInterval(() => {
       sendMovementNow();
@@ -231,6 +253,7 @@ export default function GameClient() {
       window.removeEventListener("keydown", keyDown);
       window.removeEventListener("keyup", keyUp);
       window.removeEventListener("blur", releaseKeys);
+      document.removeEventListener("visibilitychange", releaseHiddenKeys);
       pressedKeys.clear();
     };
   }, [room, sendMovementNow]);
@@ -308,6 +331,7 @@ export default function GameClient() {
           localMovementLockedRef.current = false;
           pendingLockRef.current = undefined;
           pressedKeysRef.current.clear();
+          lastSentMovementRef.current = { x: 0, y: 0 };
           clearHudSchedule();
           setStatus("closed");
           setRoom(undefined);
@@ -322,6 +346,7 @@ export default function GameClient() {
       setStatus("connected");
       setNotice({ id: createClientId(), label: "대기실에 입장했습니다.", tone: "success" });
       sequenceRef.current = 0;
+      lastSentMovementRef.current = { x: 0, y: 0 };
       joinedRoom.send("chat:sync", true);
 
       if (mode !== "public" && !normalizedRoomId) {
@@ -350,6 +375,7 @@ export default function GameClient() {
     pendingLockRef.current = undefined;
     rendererRef.current?.setLocalMovement({ x: 0, y: 0 });
     pressedKeysRef.current.clear();
+    lastSentMovementRef.current = { x: 0, y: 0 };
     clearHudSchedule();
     if (activeRoom) await activeRoom.leave(true);
     setRoom(undefined);
@@ -371,8 +397,19 @@ export default function GameClient() {
       if (payload) localMovementLockedRef.current = true;
       pressedKeysRef.current.clear();
       rendererRef.current?.setLocalMovement({ x: 0, y: 0 });
+      const previous = lastSentMovementRef.current;
+      const stopMessage: MoveMessage = { seq: nextSequence(sequenceRef), x: 0, y: 0 };
+      if (Math.hypot(previous.x, previous.y) > 0) {
+        const anchor = rendererRef.current?.getLocalPosition();
+        if (anchor) {
+          stopMessage.anchorX = anchor.x;
+          stopMessage.anchorY = anchor.y;
+        }
+      }
+      // WebSocket 순서를 이용해 서버가 정지 좌표를 먼저 확정한 다음 그 자리에서 고정한다.
+      activeRoom.send("move", stopMessage);
+      lastSentMovementRef.current = { x: 0, y: 0 };
       activeRoom.send(type, payload);
-      activeRoom.send("move", { seq: nextSequence(sequenceRef), x: 0, y: 0 });
       return;
     }
     activeRoom.send(type, payload);
