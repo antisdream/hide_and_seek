@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "눈치숨 | 수상한 잡화점",
-  description: "소리 없이도 완전히 즐기는 웹 멀티플레이 사물 숨바꼭질",
+  description: "소리 없이도 즐길 수 있는 웹 멀티플레이 사물 숨바꼭질",
 };
 
 const previewProps = [
@@ -23,7 +23,7 @@ export default function Home() {
           <span>눈치숨</span>
         </a>
         <div className="nav-actions">
-          <span className="quiet-badge">소리 없이 완전 플레이</span>
+          <span className="quiet-badge">소리 없이도 플레이</span>
           <a className="text-button" href="/how-to-play">게임 방법</a>
         </div>
       </nav>
@@ -33,14 +33,14 @@ export default function Home() {
           <p className="eyebrow">4~10명 · 설치 없음 · 3라운드 약 9~14분</p>
           <h1>가장 평범한 것이<br /><em>가장 수상하다.</em></h1>
           <p className="hero-description">
-            잡화점 물건으로 숨어 시각 미션을 수행하거나, 진열대의 작은
-            어색함을 찾아 확인 스티커를 붙이세요.
+            숨는 팀 · 틈새정령은 잡화점 물건으로 숨어 진열 미션을 수행하고,
+            술래 · 밤지기는 진열대의 작은 어색함을 찾아 확인 스티커를 붙입니다.
           </p>
           <div className="hero-actions">
-            <a className="primary-button" href="/game">친구·AI 방 만들기</a>
-            <a className="secondary-button" href="/game">빠른 매칭</a>
+            <a className="primary-button" href="/game">게임 입장</a>
+            <a className="secondary-button" href="/how-to-play">게임 방법</a>
           </div>
-          <p className="helper-copy">회원가입·설치·음성채팅 없이 바로 플레이</p>
+          <p className="helper-copy">회원가입·설치 없이, 대기실 채팅과 경기 중 팀 신호로 소통</p>
           <a className="hero-guide-link" href="/how-to-play">실제 게임 화면으로 역할과 조작 먼저 보기 →</a>
         </div>
 
@@ -51,7 +51,7 @@ export default function Home() {
               <strong>수색 중</strong>
             </div>
             <span className="timer">00:42</span>
-            <span className="role-chip">관찰자</span>
+            <span className="role-chip">술래 · 밤지기</span>
           </div>
           <div className="preview-board">
             <div className="shelf shelf-one" />
@@ -84,7 +84,7 @@ export default function Home() {
 
       <section className="promise-strip" aria-label="핵심 특징">
         <article><span>01</span><strong>보고 추리해요</strong><p>발소리 대신 움직임 파문과 달라진 사물 배치를 살펴요.</p></article>
-        <article><span>02</span><strong>들켜도 함께해요</strong><p>발견된 뒤에도 무음 팀 신호로 남은 동료를 도와요.</p></article>
+        <article><span>02</span><strong>상황에 맞게 소통해요</strong><p>대기실에서는 채팅하고, 경기 중에는 팀 신호로 동료를 도와요.</p></article>
         <article><span>03</span><strong>실력은 팔지 않아요</strong><p>현재 능력치나 승률을 판매하는 결제 기능은 없습니다.</p></article>
       </section>
 
@@ -95,14 +95,14 @@ export default function Home() {
         </div>
         <div className="detail-cards">
           <article><span aria-hidden="true">⌾</span><div><strong>움직임 렌즈</strong><p>정답 대신 최근 움직임이 있었던 넓은 구역만 보여줘 추리를 돕습니다.</p></div></article>
-          <article><span aria-hidden="true">⇄</span><div><strong>맵 전체에서 딱 한 번</strong><p>거리와 관계없이 같은 종류의 무작위 사물과 위치를 바꿔 관찰자의 기억을 흔듭니다.</p></div></article>
-          <article><span aria-hidden="true">◫</span><div><strong>무음 팀 신호</strong><p>“여기 확인”, “관찰자 주의”를 모양과 문구로 빠르게 공유합니다.</p></div></article>
-          <article><span aria-hidden="true">✦</span><div><strong>3라운드 역할 순환</strong><p>역할 이력을 반영해 특정 사람만 계속 관찰자가 되지 않게 합니다.</p></div></article>
+          <article><span aria-hidden="true">⇄</span><div><strong>맵 전체에서 딱 한 번</strong><p>거리와 관계없이 같은 종류의 무작위 사물과 위치를 바꿔 술래 · 밤지기의 기억을 흔듭니다.</p></div></article>
+          <article><span aria-hidden="true">◫</span><div><strong>팀 신호</strong><p>“여기 확인”, “술래 조심”을 모양과 문구로 빠르게 공유합니다.</p></div></article>
+          <article><span aria-hidden="true">✦</span><div><strong>3라운드 역할 순환</strong><p>역할 이력을 반영해 특정 사람만 계속 술래가 되지 않게 합니다.</p></div></article>
         </div>
       </section>
 
       <section className="landing-cta">
-        <div><small>4인 9분 · 10인 최대 13분 30초</small><h2>별명 하나면 준비 끝.</h2><p>난이도를 고른 친구·AI 방을 만들거나, 빠른 매칭과 초대 코드로 바로 합류하세요.</p></div>
+        <div><small>4인 9분 · 10인 최대 13분 30초</small><h2>별명 하나면 준비 끝.</h2><p>방을 만든 뒤 대기실에서 AI를 조정하거나, 자리가 있는 공개 대기실에 빠른 매칭으로 합류하세요.</p></div>
         <a className="primary-button" href="/game">잡화점 입장하기</a>
       </section>
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ColyseusSDK, type Room } from "@colyseus/sdk";
 import { FAST_TEST_RULES } from "../../shared/game-rules";
-import type { GameEffect, GameSnapshot } from "../../shared/game-types";
+import type { GameEffect, GameSnapshot, LobbyChatMessage } from "../../shared/game-types";
 import { MAP_CATALOG } from "../../shared/map-generator";
 import { createNunchisoomServer } from "../../server/index";
 
@@ -31,6 +31,8 @@ test("4개 실제 소켓이 기준 맵 비공개·포탈 이동과 전체 라운
     const roleRevealSnapshots = rooms.map((room) => waitForSnapshot(room, (state) => state.phase === "COUNTDOWN"));
     const hidingSnapshots = rooms.map((room) => waitForSnapshot(room, (state) => state.phase === "HIDING"));
     for (const room of rooms) room.send("ready", true);
+    await waitForSnapshot(rooms[0], (state) => state.phase === "LOBBY" && state.canStart);
+    rooms[0].send("start", true);
     const roleReveals = await Promise.all(roleRevealSnapshots);
     assert.equal(roleReveals.filter((state) => state.self.role === "SEEKER").length, 1);
     assert.equal(roleReveals.filter((state) => state.self.role === "HIDER").length, 3);
@@ -163,6 +165,8 @@ test("세 라운드는 밤의 문구점, 달빛 물류창고, 별빛 포장공�
 
     const firstRound = waitForSnapshot(rooms[0], (state) => state.phase === "HIDING" && state.round === 1);
     for (const room of rooms) room.send("ready", true);
+    await waitForSnapshot(rooms[0], (state) => state.phase === "LOBBY" && state.canStart);
+    rooms[0].send("start", true);
     const first = await firstRound;
     const second = await waitForSnapshot(rooms[0], (state) => state.phase === "HIDING" && state.round === 2, 5_000);
     const third = await waitForSnapshot(rooms[0], (state) => state.phase === "HIDING" && state.round === 3, 5_000);
@@ -224,7 +228,7 @@ test("초대방은 방 ID로 합류하고 공개 매칭에서는 제외된다", 
   }
 });
 
-test("AI 방은 선택한 난이도로 한 명과 AI 세 명이 함께 시작한다", { timeout: 10_000 }, async () => {
+test("방장은 10인 대기실에서 난이도별 AI를 추가하고 준비 후 직접 시작한다", { timeout: 10_000 }, async () => {
   const runtime = createNunchisoomServer({
     allowedOrigins: [],
     databasePath: ":memory:",
@@ -236,20 +240,42 @@ test("AI 방은 선택한 난이도로 한 명과 AI 세 명이 함께 시작한
     const port = await runtime.listen(0);
     const client = new ColyseusSDK(`http://127.0.0.1:${port}`);
     room = await client.create("nunchisoom", {
-      mode: "practice",
-      aiDifficulty: "hard",
-      displayName: "연습자",
-      deviceId: "practice-device-001",
+      mode: "invite",
+      displayName: "AI방장",
+      deviceId: "manual-ai-host-device",
     });
     registerExpectedMessages(room);
-    const hiding = waitForSnapshot(room, (state) => state.phase === "HIDING");
+
+    room.send("bot:add", { difficulty: "easy" });
+    room.send("bot:add", { difficulty: "normal" });
+    room.send("bot:add", { difficulty: "hard" });
+    const lobby = await waitForSnapshot(room, (state) => (
+      state.phase === "LOBBY" && state.players.length === 4 && state.players.filter((player) => player.bot).length === 3
+    ));
+    assert.equal(lobby.mode, "invite");
+    assert.equal(lobby.maxPlayers, 10);
+    assert.deepEqual(
+      lobby.players
+        .filter((player) => player.bot)
+        .map((player) => player.aiDifficulty)
+        .sort(),
+      ["easy", "hard", "normal"],
+    );
+
     room.send("ready", true);
+    const readyLobby = await waitForSnapshot(room, (state) => state.phase === "LOBBY" && state.canStart);
+    assert.equal(readyLobby.players.find((player) => player.id === readyLobby.self.playerId)?.ready, true);
+    await assert.rejects(
+      waitForSnapshot(room, (state) => state.phase === "COUNTDOWN", 250),
+      /대기 시간이 250ms를 넘었습니다/,
+    );
+
+    const countdown = waitForSnapshot(room, (state) => state.phase === "COUNTDOWN");
+    const hiding = waitForSnapshot(room, (state) => state.phase === "HIDING");
+    room.send("start", true);
+    const countdownSnapshot = await countdown;
+    assert.equal(countdownSnapshot.roundPlayerCount, 4);
     const snapshot = await hiding;
-    assert.equal(snapshot.mode, "practice");
-    assert.equal(snapshot.players.length, 4);
-    assert.equal(snapshot.maxPlayers, 4);
-    assert.equal(snapshot.players.filter((player) => player.bot).length, 3);
-    assert.equal(snapshot.aiDifficulty, "hard");
     assert.ok(snapshot.self.role === "HIDER" || snapshot.self.role === "SEEKER");
     assert.equal(snapshot.self.movementSpeed, snapshot.self.role === "SEEKER" ? 9.5 : 6.5);
   } finally {
@@ -258,7 +284,7 @@ test("AI 방은 선택한 난이도로 한 명과 AI 세 명이 함께 시작한
   }
 });
 
-test("AI 방에 친구가 합류하면 AI 한 명이 빠져 네 자리를 유지한다", { timeout: 10_000 }, async () => {
+test("AI는 자동으로 빠지지 않고 방장만 추가·삭제와 게임 시작을 관리한다", { timeout: 10_000 }, async () => {
   const runtime = createNunchisoomServer({
     allowedOrigins: [],
     databasePath: ":memory:",
@@ -271,34 +297,452 @@ test("AI 방에 친구가 합류하면 AI 한 명이 빠져 네 자리를 유지
     const hostClient = new ColyseusSDK(`http://127.0.0.1:${port}`);
     const friendClient = new ColyseusSDK(`http://127.0.0.1:${port}`);
     const hostRoom = await hostClient.create("nunchisoom", {
-      mode: "practice",
-      aiDifficulty: "normal",
+      mode: "invite",
       displayName: "AI방장",
-      deviceId: "practice-mixed-host",
+      deviceId: "manual-ai-mixed-host",
     });
     registerExpectedMessages(hostRoom);
     rooms.push(hostRoom);
+
+    hostRoom.send("bot:add", { difficulty: "easy" });
+    hostRoom.send("bot:add", { difficulty: "normal" });
+    hostRoom.send("bot:add", { difficulty: "hard" });
+    await waitForSnapshot(hostRoom, (state) => state.players.length === 4 && state.players.filter((player) => player.bot).length === 3);
+
     const friendRoom = await friendClient.joinById(hostRoom.roomId, {
       mode: "invite",
       displayName: "초대친구",
-      deviceId: "practice-mixed-friend",
+      deviceId: "manual-ai-mixed-friend",
     });
     registerExpectedMessages(friendRoom);
     rooms.push(friendRoom);
 
-    const snapshot = await waitForSnapshot(hostRoom, (state) => (
-      state.players.length === 4 && state.players.filter((player) => player.bot).length === 2
-    ));
-    assert.equal(snapshot.mode, "practice");
-    assert.equal(snapshot.players.filter((player) => !player.bot).length, 2);
-    assert.equal(snapshot.aiDifficulty, "normal");
+    const joined = await waitForSnapshot(hostRoom, (state) => state.players.length === 5);
+    assert.equal(joined.players.filter((player) => player.bot).length, 3);
+    assert.equal(joined.players.filter((player) => !player.bot).length, 2);
+
+    const addDenied = waitForActionError(friendRoom, (error) => error.title === "방장 권한 필요");
+    friendRoom.send("bot:add", { difficulty: "hard" });
+    await addDenied;
+    const unchangedAfterAdd = await waitForSnapshot(hostRoom, (state) => state.players.length === 5);
+    assert.equal(unchangedAfterAdd.players.filter((player) => player.bot).length, 3);
+
+    const botId = unchangedAfterAdd.players.find((player) => player.bot)?.id;
+    assert.ok(botId);
+    const removeDenied = waitForActionError(friendRoom, (error) => error.title === "방장 권한 필요");
+    friendRoom.send("bot:remove", { botId });
+    await removeDenied;
+
+    hostRoom.send("bot:remove", { botId });
+    const removed = await waitForSnapshot(hostRoom, (state) => state.players.length === 4 && state.players.filter((player) => player.bot).length === 2);
+    assert.equal(removed.maxPlayers, 10);
+
+    hostRoom.send("ready", true);
+    friendRoom.send("ready", true);
+    await waitForSnapshot(hostRoom, (state) => state.phase === "LOBBY" && state.canStart);
+    friendRoom.send("start", true);
+    await assert.rejects(
+      waitForSnapshot(friendRoom, (state) => state.phase === "COUNTDOWN", 250),
+      /대기 시간이 250ms를 넘었습니다/,
+    );
+
+    hostRoom.send("bot:add", { difficulty: "hard" });
+    const managedByHost = await waitForSnapshot(hostRoom, (state) => state.players.length === 5);
+    assert.equal(managedByHost.players.filter((player) => player.bot).length, 3);
   } finally {
     await Promise.allSettled(rooms.map((room) => room.leave(true)));
     await runtime.shutdown();
   }
 });
 
-test("세 라운드 AI 방은 관찰자를 연속 배정하지 않고 AI 관찰자도 순찰한다", { timeout: 15_000 }, async () => {
+test("빠른 매칭은 기존 공개 대기실을 우선 채우고 시작·정원 마감 방은 제외한다", { timeout: 15_000 }, async () => {
+  const runtime = createNunchisoomServer({
+    allowedOrigins: [],
+    databasePath: ":memory:",
+    rules: { ...FAST_TEST_RULES, countdownMs: 30_000 },
+    greet: false,
+  });
+  const rooms: Room[] = [];
+  try {
+    const port = await runtime.listen(0);
+    const endpoint = `http://127.0.0.1:${port}`;
+    const roomA = await new ColyseusSDK(endpoint).create("nunchisoom", {
+      mode: "public",
+      displayName: "공개방A장",
+      deviceId: "public-room-a-host",
+    });
+    const roomB = await new ColyseusSDK(endpoint).create("nunchisoom", {
+      mode: "public",
+      displayName: "공개방B장",
+      deviceId: "public-room-b-host",
+    });
+    registerExpectedMessages(roomA);
+    registerExpectedMessages(roomB);
+    rooms.push(roomA, roomB);
+
+    roomA.send("bot:add", { difficulty: "easy" });
+    roomB.send("bot:add", { difficulty: "normal" });
+    roomB.send("bot:add", { difficulty: "hard" });
+    await waitForSnapshot(roomA, (state) => state.players.length === 2);
+    await waitForSnapshot(roomB, (state) => state.players.length === 3);
+    await delay(100);
+
+    const quickOne = await new ColyseusSDK(endpoint).joinOrCreate("nunchisoom", {
+      mode: "public",
+      displayName: "빠른참가1",
+      deviceId: "quick-match-device-1",
+    });
+    registerExpectedMessages(quickOne);
+    rooms.push(quickOne);
+    assert.equal(quickOne.roomId, roomB.roomId);
+    await waitForSnapshot(roomB, (state) => state.players.length === 4);
+
+    roomB.send("ready", true);
+    quickOne.send("ready", true);
+    await waitForSnapshot(roomB, (state) => state.phase === "LOBBY" && state.canStart);
+    const started = waitForSnapshot(roomB, (state) => state.phase === "COUNTDOWN");
+    roomB.send("start", true);
+    await started;
+    await delay(100);
+
+    const quickTwo = await new ColyseusSDK(endpoint).joinOrCreate("nunchisoom", {
+      mode: "public",
+      displayName: "빠른참가2",
+      deviceId: "quick-match-device-2",
+    });
+    registerExpectedMessages(quickTwo);
+    rooms.push(quickTwo);
+    assert.equal(quickTwo.roomId, roomA.roomId);
+    await waitForSnapshot(roomA, (state) => state.players.length === 3);
+
+    for (let index = 0; index < 7; index += 1) {
+      roomA.send("bot:add", { difficulty: index % 2 === 0 ? "easy" : "normal" });
+    }
+    const full = await waitForSnapshot(roomA, (state) => state.players.length === 10);
+    assert.equal(full.maxPlayers, 10);
+    assert.equal(full.players.filter((player) => player.bot).length, 8);
+    await delay(100);
+
+    const quickThree = await new ColyseusSDK(endpoint).joinOrCreate("nunchisoom", {
+      mode: "public",
+      displayName: "빠른참가3",
+      deviceId: "quick-match-device-3",
+    });
+    registerExpectedMessages(quickThree);
+    rooms.push(quickThree);
+    assert.notEqual(quickThree.roomId, roomA.roomId);
+    assert.notEqual(quickThree.roomId, roomB.roomId);
+    const newRoom = await waitForSnapshot(quickThree, (state) => state.players.length === 1);
+    assert.equal(newRoom.maxPlayers, 10);
+  } finally {
+    await Promise.allSettled(rooms.map((room) => room.leave(true)));
+    await runtime.shutdown();
+  }
+});
+
+test("연결이 끊긴 참가자가 있으면 시작을 막고 카운트다운을 대기실로 되돌린다", { timeout: 15_000 }, async () => {
+  const runtime = createNunchisoomServer({
+    allowedOrigins: [],
+    databasePath: ":memory:",
+    rules: { ...FAST_TEST_RULES, countdownMs: 5_000 },
+    greet: false,
+  });
+  const rooms: Room[] = [];
+  try {
+    const port = await runtime.listen(0);
+    const endpoint = `http://127.0.0.1:${port}`;
+    const clients = Array.from({ length: 5 }, () => new ColyseusSDK(endpoint));
+    const hostRoom = await clients[0].create("nunchisoom", {
+      mode: "invite",
+      displayName: "연결검증방장",
+      deviceId: "disconnect-host-device",
+    });
+    registerExpectedMessages(hostRoom);
+    rooms.push(hostRoom);
+    for (let index = 1; index < clients.length; index += 1) {
+      const room = await clients[index].joinById(hostRoom.roomId, {
+        mode: "invite",
+        displayName: `연결검증${index}`,
+        deviceId: `disconnect-member-device-${index}`,
+      });
+      registerExpectedMessages(room);
+      rooms.push(room);
+    }
+
+    for (const room of rooms) room.send("ready", true);
+    await waitForSnapshot(hostRoom, (state) => state.phase === "LOBBY" && state.canStart);
+    const droppedState = await waitForSnapshot(rooms[4], (state) => state.players.length === 5);
+    const droppedPlayerId = droppedState.self.playerId;
+    const firstDroppedRoom = rooms[4];
+    const firstReconnectToken = firstDroppedRoom.reconnectionToken;
+    forgetRoom(rooms, firstDroppedRoom);
+    firstDroppedRoom.reconnection.enabled = false;
+    await firstDroppedRoom.leave(false);
+
+    const disconnectedLobby = await waitForSnapshot(hostRoom, (state) => (
+      state.phase === "LOBBY"
+      && !state.canStart
+      && state.players.some((player) => player.id === droppedPlayerId && !player.connected && player.status === "waiting")
+    ));
+    assert.equal(disconnectedLobby.roundPlayerCount, 4);
+    const reconnectRequired = waitForActionError(hostRoom, (error) => error.title === "재연결 대기");
+    hostRoom.send("start", true);
+    await reconnectRequired;
+
+    const firstReconnectedRoom = await clients[4].reconnect(firstReconnectToken);
+    registerExpectedMessages(firstReconnectedRoom);
+    rooms.push(firstReconnectedRoom);
+    await waitForSnapshot(hostRoom, (state) => (
+      state.phase === "LOBBY"
+      && state.canStart
+      && state.players.every((player) => player.bot || player.connected)
+    ));
+
+    const countdown = waitForSnapshot(hostRoom, (state) => state.phase === "COUNTDOWN" && state.round === 1);
+    hostRoom.send("start", true);
+    await countdown;
+    const secondDroppedRoom = rooms[3];
+    const secondState = await waitForSnapshot(secondDroppedRoom, (state) => state.phase === "COUNTDOWN");
+    const secondDroppedPlayerId = secondState.self.playerId;
+    const secondReconnectToken = secondDroppedRoom.reconnectionToken;
+    forgetRoom(rooms, secondDroppedRoom);
+    secondDroppedRoom.reconnection.enabled = false;
+    await secondDroppedRoom.leave(false);
+    const cancelled = await waitForSnapshot(hostRoom, (state) => (
+      state.phase === "LOBBY"
+      && state.round === 0
+      && state.players.some((player) => player.id === secondDroppedPlayerId && player.status === "waiting")
+    ));
+    assert.equal(cancelled.canStart, false);
+
+    const secondReconnectedRoom = await clients[3].reconnect(secondReconnectToken);
+    registerExpectedMessages(secondReconnectedRoom);
+    rooms.push(secondReconnectedRoom);
+  } finally {
+    await Promise.allSettled(rooms.map((room) => room.leave(true)));
+    await runtime.shutdown();
+  }
+});
+
+test("공개방 방장 연결이 끊기면 매칭을 잠그고 재연결·만료 뒤 목록과 방장을 복구한다", { timeout: 20_000 }, async () => {
+  const runtime = createNunchisoomServer({
+    allowedOrigins: [],
+    databasePath: ":memory:",
+    rules: FAST_TEST_RULES,
+    greet: false,
+  });
+  const rooms: Room[] = [];
+  try {
+    const port = await runtime.listen(0);
+    const endpoint = `http://127.0.0.1:${port}`;
+    const hostClient = new ColyseusSDK(endpoint);
+    const hostRoom = await hostClient.create("nunchisoom", {
+      mode: "public",
+      displayName: "재연결방장",
+      deviceId: "public-reconnect-host",
+    });
+    registerExpectedMessages(hostRoom);
+    rooms.push(hostRoom);
+    const friendRoom = await new ColyseusSDK(endpoint).joinById(hostRoom.roomId, {
+      mode: "public",
+      displayName: "재연결친구",
+      deviceId: "public-reconnect-friend",
+    });
+    registerExpectedMessages(friendRoom);
+    rooms.push(friendRoom);
+    const joined = await waitForSnapshot(friendRoom, (state) => state.players.length === 2);
+    const hostPlayerId = joined.players.find((player) => player.host)?.id;
+    assert.ok(hostPlayerId);
+
+    const reconnectToken = hostRoom.reconnectionToken;
+    forgetRoom(rooms, hostRoom);
+    hostRoom.reconnection.enabled = false;
+    await hostRoom.leave(false);
+    await waitForSnapshot(friendRoom, (state) => state.players.some((player) => (
+      player.id === hostPlayerId && !player.connected && player.status === "waiting"
+    )));
+    await delay(100);
+
+    const lockedOutRoom = await new ColyseusSDK(endpoint).joinOrCreate("nunchisoom", {
+      mode: "public",
+      displayName: "잠금중빠른참가",
+      deviceId: "public-locked-quick-match",
+    });
+    registerExpectedMessages(lockedOutRoom);
+    rooms.push(lockedOutRoom);
+    assert.notEqual(lockedOutRoom.roomId, hostRoom.roomId);
+
+    const reconnectedHostRoom = await hostClient.reconnect(reconnectToken);
+    registerExpectedMessages(reconnectedHostRoom);
+    rooms.push(reconnectedHostRoom);
+    await waitForSnapshot(friendRoom, (state) => state.players.some((player) => (
+      player.id === hostPlayerId && player.connected && player.host
+    )));
+    await delay(100);
+
+    const reopenedQuickRoom = await new ColyseusSDK(endpoint).joinOrCreate("nunchisoom", {
+      mode: "public",
+      displayName: "재개후빠른참가",
+      deviceId: "public-reopened-quick-match",
+    });
+    registerExpectedMessages(reopenedQuickRoom);
+    rooms.push(reopenedQuickRoom);
+    assert.equal(reopenedQuickRoom.roomId, hostRoom.roomId);
+
+    forgetRoom(rooms, reconnectedHostRoom);
+    reconnectedHostRoom.reconnection.enabled = false;
+    await reconnectedHostRoom.leave(false);
+    const migrated = await waitForSnapshot(friendRoom, (state) => (
+      state.players.length === 2
+      && state.players.some((player) => player.id === state.self.playerId && player.host)
+    ), 12_000);
+    assert.equal(migrated.players.find((player) => player.host)?.id, migrated.self.playerId);
+    await delay(100);
+
+    const migratedQuickRoom = await new ColyseusSDK(endpoint).joinOrCreate("nunchisoom", {
+      mode: "public",
+      displayName: "방장이전후참가",
+      deviceId: "public-migrated-quick-match",
+    });
+    registerExpectedMessages(migratedQuickRoom);
+    rooms.push(migratedQuickRoom);
+    assert.equal(migratedQuickRoom.roomId, hostRoom.roomId);
+  } finally {
+    await Promise.allSettled(rooms.map((room) => room.leave(true)));
+    await runtime.shutdown();
+  }
+});
+
+test("방장이 없는 동안 남은 참가자가 재연결하면 새 방장으로 선출된다", { timeout: 10_000 }, async () => {
+  const runtime = createNunchisoomServer({
+    allowedOrigins: [],
+    databasePath: ":memory:",
+    rules: FAST_TEST_RULES,
+    greet: false,
+  });
+  const rooms: Room[] = [];
+  try {
+    const port = await runtime.listen(0);
+    const endpoint = `http://127.0.0.1:${port}`;
+    const hostRoom = await new ColyseusSDK(endpoint).create("nunchisoom", {
+      mode: "invite",
+      displayName: "빈방장검증",
+      deviceId: "empty-host-owner-device",
+    });
+    registerExpectedMessages(hostRoom);
+    rooms.push(hostRoom);
+    const friendClient = new ColyseusSDK(endpoint);
+    const friendRoom = await friendClient.joinById(hostRoom.roomId, {
+      mode: "invite",
+      displayName: "재연결후보",
+      deviceId: "empty-host-friend-device",
+    });
+    registerExpectedMessages(friendRoom);
+    rooms.push(friendRoom);
+    await waitForSnapshot(hostRoom, (state) => state.players.length === 2);
+
+    const friendReconnectToken = friendRoom.reconnectionToken;
+    forgetRoom(rooms, friendRoom);
+    friendRoom.reconnection.enabled = false;
+    await friendRoom.leave(false);
+    await waitForSnapshot(hostRoom, (state) => state.players.some((player) => (
+      player.id !== state.self.playerId && !player.connected
+    )));
+    forgetRoom(rooms, hostRoom);
+    await hostRoom.leave(true);
+
+    const reconnectedFriendRoom = await friendClient.reconnect(friendReconnectToken);
+    registerExpectedMessages(reconnectedFriendRoom);
+    rooms.push(reconnectedFriendRoom);
+    const elected = await waitForSnapshot(reconnectedFriendRoom, (state) => (
+      state.players.length === 1
+      && state.players.some((player) => player.id === state.self.playerId && player.host && player.connected)
+    ));
+    assert.equal(elected.players[0].id, elected.self.playerId);
+  } finally {
+    await Promise.allSettled(rooms.map((room) => room.leave(true)));
+    await runtime.shutdown();
+  }
+});
+
+test("대기실 채팅은 서버 발신자를 사용하고 동기화·도배·경기 단계 제한을 지킨다", { timeout: 12_000 }, async () => {
+  const runtime = createNunchisoomServer({
+    allowedOrigins: [],
+    databasePath: ":memory:",
+    rules: FAST_TEST_RULES,
+    greet: false,
+  });
+  const rooms: Room[] = [];
+  try {
+    const port = await runtime.listen(0);
+    const endpoint = `http://127.0.0.1:${port}`;
+    const hostRoom = await new ColyseusSDK(endpoint).create("nunchisoom", {
+      mode: "invite",
+      displayName: "채팅방장",
+      deviceId: "chat-host-device",
+    });
+    registerExpectedMessages(hostRoom);
+    rooms.push(hostRoom);
+    const friendRoom = await new ColyseusSDK(endpoint).joinById(hostRoom.roomId, {
+      mode: "invite",
+      displayName: "채팅친구",
+      deviceId: "chat-friend-device",
+    });
+    registerExpectedMessages(friendRoom);
+    rooms.push(friendRoom);
+
+    const friendState = await waitForSnapshot(friendRoom, (state) => state.players.length === 2);
+    const hostMessagePromise = waitForChatMessage(hostRoom, (message) => message.text === "안녕 방장님");
+    const friendMessagePromise = waitForChatMessage(friendRoom, (message) => message.text === "안녕 방장님");
+    friendRoom.send("chat:send", {
+      text: "  안녕   방장님  ",
+      playerId: friendState.players.find((player) => player.host)?.id,
+      displayName: "가짜방장",
+    });
+    const [hostMessage, friendMessage] = await Promise.all([hostMessagePromise, friendMessagePromise]);
+    assert.equal(hostMessage.id, friendMessage.id);
+    assert.equal(hostMessage.playerId, friendState.self.playerId);
+    assert.equal(hostMessage.displayName, "채팅친구");
+
+    const historyPromise = waitForChatHistory(hostRoom, (messages) => messages.some((message) => message.id === hostMessage.id));
+    hostRoom.send("chat:sync", true);
+    const history = await historyPromise;
+    assert.equal(history.at(-1)?.text, "안녕 방장님");
+
+    const maxLengthText = "가".repeat(120);
+    const maxLengthMessage = waitForChatMessage(hostRoom, (message) => message.text === maxLengthText);
+    hostRoom.send("chat:send", { text: maxLengthText });
+    assert.equal((await maxLengthMessage).text.length, 120);
+
+    const rateLimited = waitForActionError(friendRoom, (error) => error.title === "잠시만 기다려 주세요");
+    friendRoom.send("chat:send", { text: "너무 빠른 두 번째 메시지" });
+    await rateLimited;
+
+    hostRoom.send("bot:add", { difficulty: "easy" });
+    hostRoom.send("bot:add", { difficulty: "normal" });
+    await waitForSnapshot(hostRoom, (state) => state.players.length === 4);
+    hostRoom.send("ready", true);
+    friendRoom.send("ready", true);
+    await waitForSnapshot(hostRoom, (state) => state.phase === "LOBBY" && state.canStart);
+
+    const chatCleared = waitForRoomMessage<true>(friendRoom, "chat:clear", (cleared) => cleared === true);
+    const countdown = waitForSnapshot(hostRoom, (state) => state.phase === "COUNTDOWN");
+    hostRoom.send("start", true);
+    await Promise.all([chatCleared, countdown]);
+
+    const phaseDenied = waitForActionError(friendRoom, (error) => error.title === "대기실 채팅");
+    friendRoom.send("chat:send", { text: "경기 중에는 보낼 수 없음" });
+    await phaseDenied;
+    const emptyHistoryPromise = waitForChatHistory(friendRoom, (messages) => messages.length === 0);
+    friendRoom.send("chat:sync", true);
+    assert.deepEqual(await emptyHistoryPromise, []);
+  } finally {
+    await Promise.allSettled(rooms.map((room) => room.leave(true)));
+    await runtime.shutdown();
+  }
+});
+
+test("세 라운드 혼합 방은 술래를 연속 배정하지 않고 AI 술래도 순찰한다", { timeout: 15_000 }, async () => {
   const runtime = createNunchisoomServer({
     allowedOrigins: [],
     databasePath: ":memory:",
@@ -317,13 +761,18 @@ test("세 라운드 AI 방은 관찰자를 연속 배정하지 않고 AI 관찰�
     const port = await runtime.listen(0);
     const client = new ColyseusSDK(`http://127.0.0.1:${port}`);
     room = await client.create("nunchisoom", {
-      mode: "practice",
-      aiDifficulty: "hard",
+      mode: "invite",
       displayName: "역할검증자",
-      deviceId: "practice-role-rotation",
+      deviceId: "mixed-role-rotation",
     });
     registerExpectedMessages(room);
+    room.send("bot:add", { difficulty: "hard" });
+    room.send("bot:add", { difficulty: "hard" });
+    room.send("bot:add", { difficulty: "hard" });
+    await waitForSnapshot(room, (state) => state.players.length === 4 && state.players.filter((player) => player.bot).length === 3);
     room.send("ready", true);
+    await waitForSnapshot(room, (state) => state.phase === "LOBBY" && state.canStart);
+    room.send("start", true);
 
     const seekerNames: string[] = [];
     let aiSeekerMoved = false;
@@ -390,6 +839,8 @@ test("위치 고정은 이동 heartbeat를 막고 전역 자리바꿈은 술래�
 
     const hidingPromises = rooms.map((room) => waitForSnapshot(room, (state) => state.phase === "HIDING"));
     for (const room of rooms) room.send("ready", true);
+    await waitForSnapshot(rooms[0], (state) => state.phase === "LOBBY" && state.canStart);
+    rooms[0].send("start", true);
     const hidingStates = await Promise.all(hidingPromises);
     const hiderIndex = hidingStates.findIndex((state) => state.self.role === "HIDER");
     const seekerIndex = hidingStates.findIndex((state) => state.self.role === "SEEKER");
@@ -466,9 +917,74 @@ test("위치 고정은 이동 heartbeat를 막고 전역 자리바꿈은 술래�
 
 function registerExpectedMessages(room: Room): void {
   room.onMessage<GameSnapshot>("state", () => {});
-  for (const type of ["notice", "effect", "lens", "ping", "action-error"]) {
+  for (const type of ["notice", "effect", "lens", "ping", "action-error", "chat:message", "chat:history", "chat:clear"]) {
     room.onMessage(type, () => {});
   }
+}
+
+interface ActionErrorMessage {
+  id: string;
+  title: string;
+  label: string;
+}
+
+function waitForActionError(
+  room: Room,
+  predicate: (error: ActionErrorMessage) => boolean,
+  timeoutMs = 5_000,
+): Promise<ActionErrorMessage> {
+  return waitForRoomMessage(room, "action-error", predicate, timeoutMs);
+}
+
+function waitForChatMessage(
+  room: Room,
+  predicate: (message: LobbyChatMessage) => boolean,
+  timeoutMs = 5_000,
+): Promise<LobbyChatMessage> {
+  return waitForRoomMessage(room, "chat:message", predicate, timeoutMs);
+}
+
+function waitForChatHistory(
+  room: Room,
+  predicate: (messages: LobbyChatMessage[]) => boolean,
+  timeoutMs = 5_000,
+): Promise<LobbyChatMessage[]> {
+  return waitForRoomMessage<{ messages: LobbyChatMessage[] }>(
+    room,
+    "chat:history",
+    (history) => predicate(history.messages),
+    timeoutMs,
+  ).then((history) => history.messages);
+}
+
+function waitForRoomMessage<T>(
+  room: Room,
+  type: string,
+  predicate: (message: T) => boolean,
+  timeoutMs = 5_000,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let removeListener: () => void = () => {};
+    const timer = setTimeout(() => {
+      removeListener();
+      reject(new Error(`${type} 메시지 대기 시간이 ${timeoutMs}ms를 넘었습니다.`));
+    }, timeoutMs);
+    removeListener = room.onMessage<T>(type, (message) => {
+      if (!predicate(message)) return;
+      clearTimeout(timer);
+      removeListener();
+      resolve(message);
+    });
+  });
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function forgetRoom(rooms: Room[], room: Room): void {
+  const index = rooms.indexOf(room);
+  if (index >= 0) rooms.splice(index, 1);
 }
 
 function waitForSnapshot(

@@ -10,6 +10,31 @@ import {
   sampleMotionAt,
   seekerThreatAccent,
 } from "../../app/game/game-renderer";
+import { isBlocked } from "../../shared/geometry";
+
+const EMPTY_TEST_MAP = {
+  id: "empty-renderer-test",
+  name: "빈 렌더러 검증 맵",
+  theme: "stationery" as const,
+  version: "1",
+  width: 20,
+  height: 20,
+  obstacles: [],
+  zones: [],
+  portals: [],
+};
+
+const RECONCILIATION_SHELF_MAP = {
+  id: "reconciliation-shelf-test",
+  name: "권위 좌표 보정 선반 검증 맵",
+  theme: "stationery" as const,
+  version: "1",
+  width: 14,
+  height: 12,
+  obstacles: [{ id: "shelf", x: 3, y: 3, width: 6, height: 1 }],
+  zones: [],
+  portals: [],
+};
 
 test("큰 맵의 사전 탐색은 전체가 보이는 배율로 시작한다", () => {
   assert.equal(previewCameraZoom(1_920, 1_200, 960, 640), 0.46);
@@ -70,41 +95,87 @@ test("로컬 입력 예측도 서버와 같은 벽 충돌을 적용한다", () =
     portals: [],
   };
   const free = predictLocalMovement({ x: 1, y: 5 }, { x: 0, y: 1 }, 5, 100, map);
-  // 탭 전환 등으로 프레임이 길어져도 한 번에 50ms 이상 예측하지 않는다.
-  assert.equal(free.y, 5.25);
+  // 150ms 이하의 짧은 프레임 지연은 이동 시간을 버리지 않고 따라잡는다.
+  assert.ok(Math.abs(free.y - 5.5) <= 1e-9);
   const blocked = predictLocalMovement({ x: 1.5, y: 5 }, { x: 1, y: 0 }, 5, 100, map);
   // 하위 스텝만큼 벽 앞까지 접근하되 충돌 반경 안으로는 들어가지 않는다.
   assert.ok(blocked.x > 1.5 && blocked.x < 2);
   assert.ok(blocked.x <= 2 - 0.36);
 });
 
-test("지연된 권위 좌표도 50ms에서 멈추지 않고 현재 시각까지 나눠 투영한다", () => {
-  const map = {
-    id: "projection-test",
-    name: "투영 검증",
-    theme: "stationery" as const,
-    version: "1",
-    width: 20,
-    height: 20,
-    obstacles: [],
-    zones: [],
-    portals: [],
-  };
-  const projected = projectLocalAuthorityMotion(
-    { serverTime: 1_000, x: 5 * 40, y: 5 * 40, rotation: 0, teleportRevision: 0 },
-    { x: -1, y: 0 },
-    5,
-    1_200,
-    map,
-  );
-  assert.equal(projected.serverTime, 1_200);
-  assert.ok(Math.abs(projected.x - 4 * 40) < 0.001);
+test("급회전·키 전환에도 현재 입력을 과거 권위 좌표에 소급 투영하지 않는다", () => {
+  const beforeTurn = { serverTime: 1_000, x: 5 * 40, y: 5 * 40, rotation: 0, teleportRevision: 0 };
+  const afterTurn = { serverTime: 1_033, x: 5.2 * 40, y: 5 * 40, rotation: -Math.PI / 2, teleportRevision: 0 };
+
+  // 함수 계약에서 현재 입력·속도·현재 시각을 제거해 확인되지 않은 과거 입력을 적용할 수 없게 한다.
+  assert.equal(projectLocalAuthorityMotion.length, 1);
+  assert.deepEqual(projectLocalAuthorityMotion(beforeTurn), beforeTurn);
+  assert.deepEqual(projectLocalAuthorityMotion(afterTurn), afterTurn);
 });
 
-test("이동 중 큰 서버 오차도 한 프레임에 순간이동하지 않고 연속 보정한다", () => {
-  const corrected = reconcileLocalPosition({ x: 400, y: 80 }, { x: 0, y: 80 }, 16);
+test("정지 중 큰 서버 오차도 한 프레임에 순간이동하지 않고 연속 보정한다", () => {
+  const corrected = reconcileLocalPosition({ x: 400, y: 80 }, { x: 40, y: 80 }, 16, EMPTY_TEST_MAP);
   assert.ok(corrected.x > 0 && corrected.x < 400);
   assert.equal(corrected.y, 80);
+});
+
+test("이동 중에는 누르고 있는 방향의 반대로 권위 좌표를 따라가지 않는다", () => {
+  const display = { x: 400, y: 80 };
+  const corrected = reconcileLocalPosition(display, { x: 40, y: 80 }, 16, EMPTY_TEST_MAP, { x: 1, y: 0 });
+  assert.deepEqual(corrected, display);
+});
+
+test("이동 중 횡방향 좌표 보정은 60fps 한 프레임에 3.2px을 넘지 않는다", () => {
+  const display = { x: 80, y: 80 };
+  const corrected = reconcileLocalPosition(display, { x: 80, y: 480 }, 16, EMPTY_TEST_MAP, { x: 1, y: 0 });
+  const correction = Math.hypot(corrected.x - display.x, corrected.y - display.y);
+  assert.ok(correction > 0);
+  assert.ok(correction <= 3.2 + 0.000_001);
+  assert.equal(corrected.x, display.x);
+});
+
+test("이동 중 반대편 권위 좌표 보정이 선반 안으로 캐릭터를 밀어 넣지 않는다", () => {
+  let display = { x: 4 * 40, y: 2.64 * 40 };
+  const authority = { x: 4 * 40, y: 4.36 * 40 };
+
+  for (let frame = 0; frame < 12; frame += 1) {
+    const predicted = predictLocalMovement(
+      { x: display.x / 40, y: display.y / 40 },
+      { x: 1, y: 0 },
+      9.5,
+      16,
+      RECONCILIATION_SHELF_MAP,
+    );
+    display = reconcileLocalPosition(
+      { x: predicted.x * 40, y: predicted.y * 40 },
+      authority,
+      16,
+      RECONCILIATION_SHELF_MAP,
+      { x: 1, y: 0 },
+    );
+    assert.equal(
+      isBlocked({ x: display.x / 40, y: display.y / 40 }, 0.36, RECONCILIATION_SHELF_MAP),
+      false,
+      `${frame}번째 이동 프레임에서 권위 보정이 선반 안으로 들어갔습니다.`,
+    );
+  }
+  assert.ok(display.x > 4 * 40);
+  assert.ok(display.y <= 2.64 * 40 + 0.001);
+});
+
+test("정지 중 권위 좌표 보정도 선반을 가로질러 반대편으로 이동하지 않는다", () => {
+  let display = { x: 4 * 40, y: 2 * 40 };
+  const authority = { x: 4 * 40, y: 4.36 * 40 };
+
+  for (let frame = 0; frame < 60; frame += 1) {
+    display = reconcileLocalPosition(display, authority, 16, RECONCILIATION_SHELF_MAP);
+    assert.equal(
+      isBlocked({ x: display.x / 40, y: display.y / 40 }, 0.36, RECONCILIATION_SHELF_MAP),
+      false,
+      `${frame}번째 정지 보정 프레임에서 권위 보정이 선반 안으로 들어갔습니다.`,
+    );
+  }
+  assert.ok(display.y <= 2.64 * 40 + 0.001);
 });
 
 test("밤지기 위협 외형은 아바타마다 오라 색을 유지하고 기본값을 제공한다", () => {

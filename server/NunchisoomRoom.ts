@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { Room, ServerError, type AuthContext, type Client } from "@colyseus/core";
 import { z } from "zod";
 import { isAllowedRequestOrigin, SAME_HOST_ORIGIN } from "./origin-policy";
-import { aiProfileFor, isAiDifficulty } from "../shared/ai-rules";
+import { aiProfileFor } from "../shared/ai-rules";
 import {
   distance,
   hasLineOfSight,
@@ -32,6 +32,7 @@ import type {
   GamePhase,
   GameRules,
   GameSnapshot,
+  LobbyChatMessage,
   MissionView,
   MoveMessage,
   PingKind,
@@ -62,11 +63,13 @@ const pingSchema = z.object({
   kind: z.enum(["check", "suspect", "done", "danger", "moving"]),
 });
 const joinSchema = z.object({
-  mode: z.enum(["public", "invite", "practice"]).optional(),
-  aiDifficulty: z.enum(["easy", "normal", "hard"]).optional(),
+  mode: z.enum(["public", "invite"]).optional(),
   displayName: z.string().min(1).max(40),
   deviceId: z.string().min(8).max(120),
 });
+const addBotSchema = z.object({ difficulty: z.enum(["easy", "normal", "hard"]) });
+const removeBotSchema = z.object({ botId: z.string().min(4).max(80) });
+const chatSchema = z.object({ text: z.string().min(1).max(120) });
 
 interface AuthData {
   displayName: string;
@@ -89,6 +92,7 @@ interface InternalPlayer extends Point {
   ready: boolean;
   connected: boolean;
   bot: boolean;
+  aiDifficulty?: AiDifficulty;
   role: PlayerRole;
   score: number;
   caught: boolean;
@@ -104,6 +108,7 @@ interface InternalPlayer extends Point {
   lastTagAt: number;
   lensReadyAt: number;
   lastPingAt: number;
+  lastChatAt: number;
   lastMovedAt: number;
   portalReadyAt: number;
   teleportRevision: number;
@@ -152,9 +157,9 @@ export class NunchisoomRoom extends Room {
   private preparedSeekerIds = new Set<string>();
   private readonly replay: ReplayBeat[] = [];
   private readonly recentMoves: RecentMove[] = [];
+  private readonly lobbyChat: LobbyChatMessage[] = [];
   private runtimeConfig: RuntimeConfig = DEFAULT_RUNTIME_CONFIG;
   private mode: RoomMode = "public";
-  private aiDifficulty: AiDifficulty = "normal";
   private phase: GamePhase = "LOBBY";
   private phaseEndsAt = 0;
   private round = 0;
@@ -170,21 +175,19 @@ export class NunchisoomRoom extends Room {
   private result?: RoundResult;
   private matchId = randomUUID();
   private matchStartedAt = 0;
+  private matchmakingRefreshQueue: Promise<void> = Promise.resolve();
 
   protected getRuntimeConfig(): RuntimeConfig {
     return DEFAULT_RUNTIME_CONFIG;
   }
 
-  async onCreate(options: { mode?: RoomMode; aiDifficulty?: AiDifficulty }): Promise<void> {
+  async onCreate(options: { mode?: RoomMode }): Promise<void> {
     this.runtimeConfig = this.getRuntimeConfig();
-    this.mode = options.mode === "invite" || options.mode === "practice" ? options.mode : "public";
-    this.aiDifficulty = isAiDifficulty(options.aiDifficulty) ? options.aiDifficulty : "normal";
+    this.mode = options.mode === "invite" ? "invite" : "public";
     this.rules = this.runtimeConfig.rules;
-    this.maxClients = this.mode === "practice" ? 4 : this.rules.maxPlayers;
     this.maxMessagesPerSecond = 45;
     this.patchRate = null;
-    await this.setPrivate(this.mode !== "public");
-    await this.setMetadata({ mode: this.mode, phase: this.phase });
+    await this.syncMatchmaking();
 
     this.onMessage("ready", z.boolean(), (client, ready) => this.handleReady(client, ready));
     this.onMessage("move", moveSchema, (client, message) => this.handleMove(client, message));
@@ -194,6 +197,10 @@ export class NunchisoomRoom extends Room {
     this.onMessage("lens", z.literal(true), (client) => this.handleLens(client));
     this.onMessage("ping", pingSchema, (client, message) => this.handlePing(client, message.kind));
     this.onMessage("start", z.literal(true), (client) => this.handleStart(client));
+    this.onMessage("bot:add", addBotSchema, (client, message) => this.handleAddBot(client, message.difficulty));
+    this.onMessage("bot:remove", removeBotSchema, (client, message) => this.handleRemoveBot(client, message.botId));
+    this.onMessage("chat:send", chatSchema, (client, message) => this.handleChat(client, message.text));
+    this.onMessage("chat:sync", z.literal(true), (client) => this.handleChatSync(client));
 
     this.setSimulationInterval((deltaTime) => this.tick(deltaTime), 1_000 / this.rules.tickRate);
   }
@@ -217,6 +224,12 @@ export class NunchisoomRoom extends Room {
   onJoin(client: Client): void {
     if (this.phase !== "LOBBY" && this.phase !== "FINAL") {
       throw new ServerError(4_213, "진행 중인 경기에는 새로 입장할 수 없습니다.");
+    }
+    if (this.publicHostIsUnavailable()) {
+      throw new ServerError(4_215, "방장이 재연결 중입니다. 잠시 후 다시 시도해 주세요.");
+    }
+    if (this.players.size >= this.rules.maxPlayers) {
+      throw new ServerError(4_214, "방이 가득 찼습니다. 다른 방을 이용해 주세요.");
     }
     const auth = client.auth as AuthData;
     const player: InternalPlayer = {
@@ -245,6 +258,7 @@ export class NunchisoomRoom extends Room {
       lastTagAt: 0,
       lensReadyAt: 0,
       lastPingAt: 0,
+      lastChatAt: 0,
       lastMovedAt: 0,
       portalReadyAt: 0,
       teleportRevision: 0,
@@ -260,10 +274,10 @@ export class NunchisoomRoom extends Room {
     this.players.set(player.id, player);
     this.sessionToPlayer.set(client.sessionId, player.id);
     if (!this.hostPlayerId) this.hostPlayerId = player.id;
-    this.syncPracticeBots();
     this.version += 1;
+    this.refreshMatchmaking();
     // 입장한 클라이언트는 메시지 수신기를 붙이기 전이므로 기존 참가자에게만 알린다.
-    this.broadcast("notice", { label: `${player.displayName} 님이 입장했습니다.` }, { except: client });
+    this.broadcast("notice", { label: `${player.displayName}님이 대기실에 들어왔습니다.` }, { except: client });
   }
 
   onDrop(client: Client): void {
@@ -273,6 +287,14 @@ export class NunchisoomRoom extends Room {
     player.inputX = 0;
     player.inputY = 0;
     this.version += 1;
+    if (this.phase === "COUNTDOWN") {
+      this.cancelPreparedRound();
+      this.setPhase("LOBBY", 0);
+      this.broadcast("notice", { label: "연결이 끊긴 참가자가 있어 시작 준비를 취소했습니다." });
+    } else {
+      // 공개방 방장이 재연결 중이면 목록에서 잠가 새 참가자가 관리 불가능한 방에 들어오지 않게 한다.
+      this.refreshMatchmaking();
+    }
     this.allowReconnection(client, 10).catch(() => undefined);
   }
 
@@ -283,7 +305,9 @@ export class NunchisoomRoom extends Room {
     player.sessionId = client.sessionId;
     client.userData = { playerId: player.id };
     this.sessionToPlayer.set(client.sessionId, player.id);
+    if (!this.hostPlayerId) this.migrateHost();
     this.version += 1;
+    this.refreshMatchmaking();
     this.sendSnapshotTo(client);
   }
 
@@ -296,13 +320,15 @@ export class NunchisoomRoom extends Room {
     this.lastRoundSeekerIds.delete(player.id);
     this.preparedSeekerIds.delete(player.id);
     if (player.id === this.hostPlayerId) this.migrateHost();
-    if (this.phase === "LOBBY" || this.phase === "FINAL") this.syncPracticeBots();
     this.version += 1;
+    this.broadcast("notice", { label: `${player.displayName}님이 방을 나갔습니다.` });
 
-    if (this.phase === "COUNTDOWN" && !this.hasEnoughPlayers()) {
+    if (this.phase === "COUNTDOWN") {
       this.cancelPreparedRound();
       this.setPhase("LOBBY", 0);
-      this.broadcast("notice", { label: "인원이 부족해 시작 준비를 취소했습니다." });
+      this.broadcast("notice", { label: "참가자가 나가 시작 준비를 취소했습니다." });
+    } else {
+      this.refreshMatchmaking();
     }
     if (this.phase === "SEEKING" && player.role === "HIDER") {
       this.checkAllCaught();
@@ -326,7 +352,7 @@ export class NunchisoomRoom extends Room {
   private advancePhase(now: number): void {
     if (!this.phaseEndsAt || now < this.phaseEndsAt) return;
     if (this.phase === "COUNTDOWN") {
-      if (!this.hasEnoughPlayers()) {
+      if (!this.hasEnoughPlayers() || this.hasDisconnectedHumans()) {
         this.cancelPreparedRound();
         this.setPhase("LOBBY", 0);
         return;
@@ -355,19 +381,19 @@ export class NunchisoomRoom extends Room {
     const player = this.playerFor(client);
     if (!player) return;
     player.ready = ready;
-    if (this.mode === "practice") this.syncPracticeBots();
     this.version += 1;
-    if (this.hasEnoughPlayers() && this.humanPlayers().every((entry) => entry.ready)) {
-      this.beginCountdown(this.phase === "FINAL");
-    }
   }
 
   private handleStart(client: Client): void {
     const player = this.playerFor(client);
     if (!player || player.id !== this.hostPlayerId) return;
-    if (this.mode === "practice") this.syncPracticeBots();
+    if (this.phase !== "LOBBY" && this.phase !== "FINAL") return;
     if (!this.hasEnoughPlayers()) {
       this.sendError(client, "인원 부족", `게임을 시작하려면 ${this.publicMinPlayers()}명이 필요합니다.`);
+      return;
+    }
+    if (this.hasDisconnectedHumans()) {
+      this.sendError(client, "재연결 대기", "연결이 끊긴 참가자가 돌아오거나 방에서 나간 뒤 시작해 주세요.");
       return;
     }
     if (!this.humanPlayers().every((entry) => entry.ready)) {
@@ -391,6 +417,8 @@ export class NunchisoomRoom extends Room {
     }
     this.result = undefined;
     this.seekingStartedAt = 0;
+    this.lobbyChat.splice(0);
+    this.broadcast("chat:clear", true);
     this.prepareRound();
     this.setPhase("COUNTDOWN", Date.now() + this.rules.countdownMs);
     this.broadcastEffect({ type: "phase", label: `${this.round}라운드 역할이 정해졌습니다.` });
@@ -416,7 +444,14 @@ export class NunchisoomRoom extends Room {
     this.baselineProps = this.staticProps.map((prop) => ({ ...prop }));
     this.result = undefined;
 
-    const players = [...this.players.values()];
+    const players = this.activePlayers();
+    for (const player of this.players.values()) {
+      if (player.bot || player.connected) continue;
+      player.role = "SPECTATOR";
+      player.inputX = 0;
+      player.inputY = 0;
+      player.locked = false;
+    }
     const timing = roundTimingFor(players.length, this.rules);
     this.roundPlayerCount = timing.playerCount;
     this.roundSeekingMs = timing.seekingMs;
@@ -652,7 +687,7 @@ export class NunchisoomRoom extends Room {
   }
 
   private updateHiderBot(bot: InternalPlayer, deltaTime: number, now: number): void {
-    const profile = aiProfileFor(this.aiDifficulty);
+    const profile = aiProfileFor(bot.aiDifficulty ?? "normal");
     if (this.phase === "HIDING") {
       if (!bot.botTarget) bot.botTarget = this.generatedMap.hiderSpawns[bot.botRouteIndex % this.generatedMap.hiderSpawns.length];
       if (distance(bot, bot.botTarget) <= 0.32) {
@@ -711,7 +746,7 @@ export class NunchisoomRoom extends Room {
       bot.inputY = 0;
       return;
     }
-    const profile = aiProfileFor(this.aiDifficulty);
+    const profile = aiProfileFor(bot.aiDifficulty ?? "normal");
 
     if (this.phase === "SEEKING" && now >= bot.botThinkAt) {
       bot.botThinkAt = now + profile.thinkIntervalMs;
@@ -825,7 +860,7 @@ export class NunchisoomRoom extends Room {
   private movementSpeedFor(player: InternalPlayer): number {
     const base = player.role === "HIDER" ? this.rules.hiderSpeed : this.rules.seekerSpeed;
     if (!player.bot) return base;
-    const profile = aiProfileFor(this.aiDifficulty);
+    const profile = aiProfileFor(player.aiDifficulty ?? "normal");
     return base * (player.role === "HIDER" ? profile.hiderSpeedMultiplier : profile.seekerSpeedMultiplier);
   }
 
@@ -1027,6 +1062,7 @@ export class NunchisoomRoom extends Room {
         connected: player.connected,
         host: player.id === this.hostPlayerId,
         bot: player.bot,
+        ...(player.bot ? { aiDifficulty: player.aiDifficulty ?? "normal" } : {}),
         score: this.phase === "HIDING" || this.phase === "SEEKING" ? 0 : player.score,
         status: this.playerStatus(player),
         ...(revealRoles && player.role === "HIDER" ? { survivalScore: player.lastSurvivalScore } : {}),
@@ -1091,13 +1127,12 @@ export class NunchisoomRoom extends Room {
           completed: viewer.mission.completed,
         }
       : undefined;
-    const timing = roundTimingFor(this.roundPlayerCount || this.players.size, this.rules);
+    const timing = roundTimingFor(this.roundPlayerCount || this.activePlayers().length, this.rules);
     const snapshot: GameSnapshot = {
       version: this.version,
       serverTime: now,
       roomId: this.roomId,
       mode: this.mode,
-      ...(this.mode === "practice" ? { aiDifficulty: this.aiDifficulty } : {}),
       phase: this.phase,
       phaseEndsAt: this.phaseEndsAt,
       round: this.round,
@@ -1106,11 +1141,11 @@ export class NunchisoomRoom extends Room {
       roundDurationMs: timing.totalMs,
       seekingDurationMs: timing.seekingMs,
       minPlayers: this.publicMinPlayers(),
-      maxPlayers: this.mode === "practice" ? 4 : this.maxClients,
+      maxPlayers: this.rules.maxPlayers,
       canStart:
         (this.phase === "LOBBY" || this.phase === "FINAL") &&
         this.hasEnoughPlayers() &&
-        this.humanPlayers().every((player) => player.ready),
+        this.humanPlayers().every((player) => player.connected && player.ready),
       seekerPreview,
       self: {
         playerId: viewer.id,
@@ -1137,7 +1172,7 @@ export class NunchisoomRoom extends Room {
     this.phase = phase;
     this.phaseEndsAt = endsAt;
     this.version += 1;
-    void this.setMetadata({ mode: this.mode, phase });
+    this.refreshMatchmaking();
   }
 
   private addReplay(type: ReplayBeat["type"], label: string): void {
@@ -1176,75 +1211,185 @@ export class NunchisoomRoom extends Room {
     return [...this.players.values()].filter((player) => !player.bot);
   }
 
+  private activePlayers(): InternalPlayer[] {
+    return [...this.players.values()].filter((player) => player.bot || player.connected);
+  }
+
+  private hasDisconnectedHumans(): boolean {
+    return this.humanPlayers().some((player) => !player.connected);
+  }
+
+  private publicHostIsUnavailable(): boolean {
+    return this.mode === "public"
+      && this.humanPlayers().length > 0
+      && !this.players.get(this.hostPlayerId)?.connected;
+  }
+
   private hasEnoughPlayers(): boolean {
-    return this.mode === "practice"
-      ? this.humanPlayers().filter((player) => player.connected).length >= 1
-      : this.humanPlayers().filter((player) => player.connected).length >= this.rules.minPlayers;
+    return this.activePlayers().length >= this.rules.minPlayers;
   }
 
   private publicMinPlayers(): number {
-    return this.mode === "practice" ? 1 : this.rules.minPlayers;
+    return this.rules.minPlayers;
   }
 
-  /** AI 방은 사람 수가 바뀌어도 사람+AI 합계 네 명을 유지한다. */
-  private syncPracticeBots(): void {
-    if (this.mode !== "practice") return;
-    const targetBotCount = Math.max(0, 4 - this.humanPlayers().length);
-    const currentBots = [...this.players.values()].filter((player) => player.bot);
-    while (currentBots.length > targetBotCount) {
-      const removed = currentBots.pop();
-      if (!removed) break;
-      this.players.delete(removed.id);
-      this.seekerHistory.delete(removed.id);
-      this.lastRoundSeekerIds.delete(removed.id);
-      this.preparedSeekerIds.delete(removed.id);
+  /** 방장만 대기실에서 난이도별 AI를 추가할 수 있다. */
+  private handleAddBot(client: Client, difficulty: AiDifficulty): void {
+    const host = this.playerFor(client);
+    if (!host || host.id !== this.hostPlayerId) {
+      this.sendError(client, "방장 권한 필요", "AI 참가자는 방장만 추가할 수 있습니다.");
+      return;
+    }
+    if (this.phase !== "LOBBY" && this.phase !== "FINAL") {
+      this.sendError(client, "대기실 전용 기능", "AI 참가자는 경기가 끝난 뒤 대기실에서 추가해 주세요.");
+      return;
+    }
+    if (this.players.size >= this.rules.maxPlayers) {
+      this.sendError(client, "정원 마감", `이 방은 최대 ${this.rules.maxPlayers}명까지 참여할 수 있습니다.`);
+      return;
     }
 
-    const names = ["몽글", "콩콩", "반짝"];
+    const index = [...this.players.values()].filter((player) => player.bot).length;
     const usedNames = new Set([...this.players.values()].map((player) => player.displayName));
-    while (currentBots.length < targetBotCount) {
-      const index = currentBots.length;
-      const name = names.find((candidate) => !usedNames.has(candidate)) ?? `별콩${index + 1}`;
-      usedNames.add(name);
-      const bot: InternalPlayer = {
-        id: opaqueId("bot"),
-        displayName: name,
-        avatar: avatarAt(index + 2),
-        joinedAt: Date.now() + index,
-        ready: true,
-        connected: true,
-        bot: true,
-        role: "HIDER",
-        score: 0,
-        caught: false,
-        caughtAt: 0,
-        lastSurvivalScore: 0,
-        x: 10 + index,
-        y: 8,
-        rotation: 0,
-        entityId: opaqueId("object"),
-        propKind: pickPropKind(Date.now(), index),
-        locked: false,
-        swapUsed: false,
-        focus: 100,
-        tagReadyAt: 0,
-        lastTagAt: 0,
-        lensReadyAt: 0,
-        lastPingAt: 0,
-        lastMovedAt: 0,
-        portalReadyAt: 0,
-        teleportRevision: 0,
-        lastSeq: -1,
-        inputX: 0,
-        inputY: 0,
-        botMemoryExpiresAt: 0,
-        botThinkAt: 0,
-        botActionAt: 0,
-        botRouteIndex: 0,
-      };
-      this.players.set(bot.id, bot);
-      currentBots.push(bot);
+    const names = ["몽글", "콩콩", "반짝", "보송", "토리", "누리", "초롱", "모찌", "단비"];
+    const displayName = names.find((name) => !usedNames.has(name)) ?? `별콩${index + 1}`;
+    const now = Date.now();
+    const bot: InternalPlayer = {
+      id: opaqueId("bot"),
+      displayName,
+      avatar: avatarAt(this.players.size),
+      joinedAt: now,
+      ready: true,
+      connected: true,
+      bot: true,
+      aiDifficulty: difficulty,
+      role: "HIDER",
+      score: 0,
+      caught: false,
+      caughtAt: 0,
+      lastSurvivalScore: 0,
+      x: 10 + (index % 4),
+      y: 8 + Math.floor(index / 4),
+      rotation: 0,
+      entityId: opaqueId("object"),
+      propKind: pickPropKind(now, index),
+      locked: false,
+      swapUsed: false,
+      focus: 100,
+      tagReadyAt: 0,
+      lastTagAt: 0,
+      lensReadyAt: 0,
+      lastPingAt: 0,
+      lastChatAt: 0,
+      lastMovedAt: 0,
+      portalReadyAt: 0,
+      teleportRevision: 0,
+      lastSeq: -1,
+      inputX: 0,
+      inputY: 0,
+      botMemoryExpiresAt: 0,
+      botThinkAt: 0,
+      botActionAt: 0,
+      botRouteIndex: 0,
+    };
+    this.players.set(bot.id, bot);
+    this.version += 1;
+    this.refreshMatchmaking();
+    this.broadcast("notice", { label: `${displayName} · ${aiDifficultyKorean(difficulty)} AI가 참가했습니다.` });
+  }
+
+  /** 방장이 선택한 AI 한 명만 제거하며 사람 참가자는 이 기능으로 내보낼 수 없다. */
+  private handleRemoveBot(client: Client, botId: string): void {
+    const host = this.playerFor(client);
+    if (!host || host.id !== this.hostPlayerId) {
+      this.sendError(client, "방장 권한 필요", "AI 참가자는 방장만 내보낼 수 있습니다.");
+      return;
     }
+    if (this.phase !== "LOBBY" && this.phase !== "FINAL") {
+      this.sendError(client, "대기실 전용 기능", "AI 참가자는 경기가 끝난 뒤 대기실에서 내보내 주세요.");
+      return;
+    }
+    const bot = this.players.get(botId);
+    if (!bot?.bot) {
+      this.sendError(client, "AI 확인", "내보낼 AI 참가자를 다시 선택해 주세요.");
+      return;
+    }
+    this.players.delete(bot.id);
+    this.seekerHistory.delete(bot.id);
+    this.lastRoundSeekerIds.delete(bot.id);
+    this.preparedSeekerIds.delete(bot.id);
+    this.version += 1;
+    this.refreshMatchmaking();
+    this.broadcast("notice", { label: `${bot.displayName} AI가 대기실에서 나갔습니다.` });
+  }
+
+  /** 채팅 발신자 정보는 서버가 붙여 이름 사칭과 임의 ID 전송을 막는다. */
+  private handleChat(client: Client, rawText: string): void {
+    const player = this.playerFor(client);
+    if (!player || player.bot) return;
+    if (this.phase !== "LOBBY" && this.phase !== "FINAL") {
+      this.sendError(client, "대기실 채팅", "채팅은 경기가 시작되기 전이나 종료된 뒤에 이용할 수 있습니다.");
+      return;
+    }
+    const text = sanitizeChatText(rawText);
+    if (!text) {
+      this.sendError(client, "메시지 확인", "보낼 내용을 입력해 주세요.");
+      return;
+    }
+    const now = Date.now();
+    if (now - player.lastChatAt < 800) {
+      this.sendError(client, "잠시만 기다려 주세요", "메시지를 너무 빠르게 보내고 있어요. 잠시 후 다시 보내 주세요.");
+      return;
+    }
+    player.lastChatAt = now;
+    const message: LobbyChatMessage = {
+      id: opaqueId("chat"),
+      playerId: player.id,
+      displayName: player.displayName,
+      avatar: player.avatar,
+      text,
+      createdAt: now,
+    };
+    this.lobbyChat.push(message);
+    if (this.lobbyChat.length > 40) this.lobbyChat.shift();
+    this.broadcast("chat:message", message);
+  }
+
+  private handleChatSync(client: Client): void {
+    if (this.phase !== "LOBBY" && this.phase !== "FINAL") {
+      client.send("chat:history", { messages: [] });
+      return;
+    }
+    client.send("chat:history", { messages: [...this.lobbyChat] });
+  }
+
+  /** 사람과 AI를 합쳐 열 자리를 넘지 않도록 공개 매칭 정원과 상태를 함께 갱신한다. */
+  private async syncMatchmaking(): Promise<void> {
+    const botCount = [...this.players.values()].filter((player) => player.bot).length;
+    const maxHumanClients = Math.max(this.clients.length, this.rules.maxPlayers - botCount);
+    const maxClients = Math.max(1, maxHumanClients);
+    const lobbyOpen = this.phase === "LOBBY" || this.phase === "FINAL";
+    const publicHostUnavailable = this.publicHostIsUnavailable();
+    await this.setMatchmaking({
+      metadata: {
+        mode: this.mode,
+        phase: this.phase,
+        participantCount: this.players.size,
+        availableSlots: Math.max(0, this.rules.maxPlayers - this.players.size),
+      },
+      private: this.mode !== "public",
+      maxClients,
+      locked: !lobbyOpen || publicHostUnavailable || this.players.size >= this.rules.maxPlayers,
+    });
+  }
+
+  private refreshMatchmaking(): void {
+    // 목록 갱신을 직렬화하고, 실제 실행 시점의 최신 상태만 읽어 이전 비동기 응답의 역전을 막는다.
+    this.matchmakingRefreshQueue = this.matchmakingRefreshQueue
+      .then(() => this.syncMatchmaking())
+      .catch((error: unknown) => {
+        console.error("[게임방 목록 갱신 오류]", error);
+      });
   }
 
   private migrateHost(): void {
@@ -1254,8 +1399,8 @@ export class NunchisoomRoom extends Room {
   }
 
   private playerStatus(player: InternalPlayer): PublicPlayer["status"] {
-    if (this.phase === "LOBBY" || this.phase === "COUNTDOWN" || this.phase === "FINAL") return "lobby";
     if (!player.connected) return "waiting";
+    if (this.phase === "LOBBY" || this.phase === "COUNTDOWN" || this.phase === "FINAL") return "lobby";
     if (player.caught) return "caught";
     return "playing";
   }
@@ -1264,6 +1409,19 @@ export class NunchisoomRoom extends Room {
 function sanitizeDisplayName(value: string): string {
   const normalized = value.normalize("NFKC").replace(/[\p{C}<>]/gu, "").trim().slice(0, 12);
   return normalized || `손님-${Math.floor(1_000 + Math.random() * 9_000)}`;
+}
+
+function sanitizeChatText(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/[\p{C}<>]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+}
+
+function aiDifficultyKorean(difficulty: AiDifficulty): string {
+  return difficulty === "easy" ? "쉬움" : difficulty === "hard" ? "어려움" : "보통";
 }
 
 function opaqueId(prefix: string): string {

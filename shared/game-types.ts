@@ -1,4 +1,4 @@
-export type RoomMode = "public" | "invite" | "practice";
+export type RoomMode = "public" | "invite";
 export type AiDifficulty = "easy" | "normal" | "hard";
 export type GamePhase = "LOBBY" | "COUNTDOWN" | "HIDING" | "SEEKING" | "RESULT" | "FINAL";
 export type PlayerRole = "HIDER" | "SEEKER" | "SPECTATOR";
@@ -84,6 +84,8 @@ export interface PublicPlayer {
   connected: boolean;
   host: boolean;
   bot: boolean;
+  /** AI 참가자일 때 대기실과 결과 화면에 표시할 개별 난이도다. */
+  aiDifficulty?: AiDifficulty;
   score: number;
   status: "lobby" | "playing" | "caught" | "waiting";
   /** 결과 화면에서만 공개되는 이번 라운드 생존 점수다. */
@@ -144,8 +146,6 @@ export interface GameSnapshot {
   serverTime: number;
   roomId: string;
   mode: RoomMode;
-  /** AI 방에서 방장이 선택한 공통 난이도다. */
-  aiDifficulty?: AiDifficulty;
   phase: GamePhase;
   phaseEndsAt: number;
   round: number;
@@ -164,6 +164,15 @@ export interface GameSnapshot {
   mission?: MissionView;
   result?: RoundResult;
   replay: ReplayBeat[];
+}
+
+export interface LobbyChatMessage {
+  id: string;
+  playerId: string;
+  displayName: string;
+  avatar: string;
+  text: string;
+  createdAt: number;
 }
 
 export interface MoveMessage {

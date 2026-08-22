@@ -1,5 +1,5 @@
 import type Phaser from "phaser";
-import { MAX_MOVEMENT_DELTA_MS, moveWithCollisions } from "../../shared/geometry";
+import { moveByVectorWithCollisions, moveWithCollisions } from "../../shared/geometry";
 import type {
   GameEffect,
   GameSnapshot,
@@ -63,7 +63,8 @@ const PREVIEW_MAX_ZOOM = 1.25;
 const MOVEMENT_RESPONSE_MS = 28;
 const REMOTE_INTERPOLATION_DELAY_MS = 75;
 const MAX_EXTRAPOLATION_MS = 66;
-const MAX_LOCAL_AUTHORITY_PROJECTION_MS = 250;
+const LOCAL_RECONCILIATION_DEAD_ZONE = TILE * 0.55;
+const MAX_LOCAL_CORRECTION_AT_60_FPS = TILE * 0.08;
 const PORTAL_SNAP_DISTANCE = TILE * 4;
 
 /** 정지 후 권위 좌표를 따라갈 때 프레임 길이에 관계없이 같은 비율로 보정한다. */
@@ -127,7 +128,7 @@ export function sampleMotionAt(
   };
 }
 
-/** 로컬 입력을 즉시 반영하되 서버와 같은 충돌 반경과 축별 미끄러짐을 사용한다. */
+/** 로컬 입력을 즉시 반영하되 서버와 같은 원형 모서리 충돌과 벽면 미끄러짐을 사용한다. */
 export function predictLocalMovement(
   point: Point,
   input: Point,
@@ -139,46 +140,51 @@ export function predictLocalMovement(
 }
 
 /**
- * 가장 최근 권위 좌표를 현재 서버 시각까지 투영한다.
- * 화면의 이전 위치를 과거 스냅숏 쪽으로 당기지 않아 이동 중 고무줄 현상을 만들지 않는다.
+ * 서버가 실제로 확정한 최신 샘플만 권위 좌표로 사용한다.
+ * 현재 키 입력을 과거 스냅숏 시각에 소급 적용하면 급회전 때 존재하지 않았던 경로가 만들어진다.
  */
-export function projectLocalAuthorityMotion(
-  authority: MotionSample,
-  input: Point,
-  speed: number,
-  currentServerTime: number,
-  map: MapLayout,
-): MotionSample {
-  const elapsedMs = Math.max(0, Math.min(
-    MAX_LOCAL_AUTHORITY_PROJECTION_MS,
-    currentServerTime - authority.serverTime,
-  ));
-  let remainingMs = elapsedMs;
-  let projected = { x: authority.x / TILE, y: authority.y / TILE };
-  while (remainingMs > 0) {
-    const stepMs = Math.min(MAX_MOVEMENT_DELTA_MS, remainingMs);
-    projected = moveWithCollisions(projected, input, speed, stepMs, map);
-    remainingMs -= stepMs;
-  }
-  const moving = Math.hypot(input.x, input.y) > 0;
-  return {
-    serverTime: authority.serverTime + elapsedMs,
-    x: projected.x * TILE,
-    y: projected.y * TILE,
-    rotation: moving ? Math.atan2(input.y, input.x) : authority.rotation,
-    teleportRevision: authority.teleportRevision,
-  };
+export function projectLocalAuthorityMotion(authority: MotionSample): MotionSample {
+  return { ...authority };
 }
 
-/** 이동 중 표시 좌표를 현재 시각까지 투영한 서버 좌표에 조금씩 맞춰 큰 순간이동을 막는다. */
-export function reconcileLocalPosition(display: Point, authority: Point, deltaMs: number): Point {
-  const gap = Math.hypot(authority.x - display.x, authority.y - display.y);
-  const responseMs = gap > TILE * 2 ? 70 : 180;
+/**
+ * 작은 네트워크 오차는 그대로 두고 큰 오차만 제한된 거리로 보정한다.
+ * 누르고 있는 이동 방향의 반대로는 화면을 당기지 않아 고무줄처럼 튕기는 동작을 막는다.
+ */
+export function reconcileLocalPosition(
+  display: Point,
+  authority: Point,
+  deltaMs: number,
+  map: MapLayout,
+  input: Point = { x: 0, y: 0 },
+): Point {
+  let errorX = authority.x - display.x;
+  let errorY = authority.y - display.y;
+  const inputLength = Math.hypot(input.x, input.y);
+  if (inputLength > 0) {
+    const direction = { x: input.x / inputLength, y: input.y / inputLength };
+    const alongMovement = errorX * direction.x + errorY * direction.y;
+    if (alongMovement < 0) {
+      errorX -= direction.x * alongMovement;
+      errorY -= direction.y * alongMovement;
+    }
+  }
+  const gap = Math.hypot(errorX, errorY);
+  const moving = inputLength > 0;
+  const deadZone = moving ? LOCAL_RECONCILIATION_DEAD_ZONE : 0;
+  if (gap <= deadZone) return { ...display };
+  const responseMs = moving ? (gap > TILE * 2 ? 120 : 260) : 120;
   const blend = movementSmoothingBlend(deltaMs, responseMs);
-  return {
-    x: display.x + (authority.x - display.x) * blend,
-    y: display.y + (authority.y - display.y) * blend,
-  };
+  const desiredCorrection = Math.max(0, gap - deadZone) * blend;
+  const safeDelta = Number.isFinite(deltaMs) ? Math.max(0, deltaMs) : 0;
+  const maximumCorrection = MAX_LOCAL_CORRECTION_AT_60_FPS * Math.max(0.5, safeDelta / 16);
+  const correction = Math.min(desiredCorrection, maximumCorrection);
+  const corrected = moveByVectorWithCollisions(
+    { x: display.x / TILE, y: display.y / TILE },
+    { x: (errorX / gap) * (correction / TILE), y: (errorY / gap) * (correction / TILE) },
+    map,
+  );
+  return { x: corrected.x * TILE, y: corrected.y * TILE };
 }
 
 function interpolateAngle(from: number, to: number, ratio: number): number {
@@ -304,17 +310,11 @@ export async function mountGameRenderer(
             view.container.setRotation(latest.rotation);
             continue;
           }
-          const projected = projectLocalAuthorityMotion(
-            latest,
-            this.localMovement,
-            this.snapshot?.self.movementSpeed ?? 0,
-            currentServerTime,
-            this.snapshot!.map,
-          );
+          const authority = projectLocalAuthorityMotion(latest);
           const moving = Math.hypot(this.localMovement.x, this.localMovement.y) > 0;
           if (moving) {
             // 내 화면은 매 렌더 프레임마다 공용 충돌 계산으로 전진한다.
-            // 현재 시각까지 투영한 권위 좌표와 작은 오차를 연속 보정해 방향 전환·지연에도 큰 스냅을 만들지 않는다.
+            // 서버가 실제로 확정한 최신 좌표와의 오차만 보정해 방향 전환·지연에도 가짜 이동 경로를 만들지 않는다.
             const predicted = predictLocalMovement(
               { x: view.container.x / TILE, y: view.container.y / TILE },
               this.localMovement,
@@ -324,19 +324,25 @@ export async function mountGameRenderer(
             );
             const reconciled = reconcileLocalPosition(
               { x: predicted.x * TILE, y: predicted.y * TILE },
-              projected,
+              authority,
               delta,
+              this.snapshot!.map,
+              this.localMovement,
             );
             view.container.setPosition(reconciled.x, reconciled.y);
-          } else if (now - this.localMovementChangedAt > 90) {
+          } else if (now - this.localMovementChangedAt > 160) {
             // 키를 놓은 직후에는 마지막 서버 입력이 도착할 시간을 주고, 이후 작은 오차만 부드럽게 정리한다.
-            const correction = movementSmoothingBlend(delta, 72);
-            view.container.x += (projected.x - view.container.x) * correction;
-            view.container.y += (projected.y - view.container.y) * correction;
+            const reconciled = reconcileLocalPosition(
+              { x: view.container.x, y: view.container.y },
+              authority,
+              delta,
+              this.snapshot!.map,
+            );
+            view.container.setPosition(reconciled.x, reconciled.y);
           }
           view.container.rotation = moving
-            ? projected.rotation
-            : interpolateAngle(view.container.rotation, projected.rotation, movementSmoothingBlend(delta, 58));
+            ? Math.atan2(this.localMovement.y, this.localMovement.x)
+            : interpolateAngle(view.container.rotation, authority.rotation, movementSmoothingBlend(delta, 58));
           continue;
         }
 
@@ -1147,7 +1153,7 @@ function pingLabel(kind: TeamPing["kind"]): string {
     check: "여기 확인",
     suspect: "수상해요",
     done: "확인 완료",
-    danger: "관찰자 주의",
+    danger: "술래 조심",
     moving: "움직임 발견",
   }[kind];
 }

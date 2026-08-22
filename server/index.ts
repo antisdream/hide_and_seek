@@ -90,7 +90,11 @@ export function createNunchisoomServer(options: NunchisoomServerOptions = {}): N
       });
     },
   });
-  gameServer.define("nunchisoom", ConfiguredNunchisoomRoom);
+  gameServer
+    .define("nunchisoom", ConfiguredNunchisoomRoom)
+    .filterBy(["mode"])
+    // 자리가 있는 기존 공개 대기실 중 참가자가 많은 방부터 채운다.
+    .sortBy({ participantCount: -1, createdAt: 1 });
 
   return {
     gameServer,
