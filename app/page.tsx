@@ -37,7 +37,7 @@ export default function Home() {
             어색함을 찾아 확인 스티커를 붙이세요.
           </p>
           <div className="hero-actions">
-            <a className="primary-button" href="/game">친구방 만들기</a>
+            <a className="primary-button" href="/game">친구·AI 방 만들기</a>
             <a className="secondary-button" href="/game">빠른 매칭</a>
           </div>
           <p className="helper-copy">회원가입·설치·음성채팅 없이 바로 플레이</p>
@@ -71,7 +71,7 @@ export default function Home() {
             </div>
             <div className="clue-card">
               <span aria-hidden="true">⌁</span>
-              <p><strong>배치 힌트</strong><br />테이프는 항상 노트 오른쪽</p>
+              <p><strong>움직임 흔적</strong><br />최근 움직임은 넓은 구역으로만 보여요</p>
             </div>
             <div className="focus-meter" aria-label="집중력 75">
               <span>집중력</span>
@@ -83,9 +83,9 @@ export default function Home() {
       </section>
 
       <section className="promise-strip" aria-label="핵심 특징">
-        <article><span>01</span><strong>보고 추리해요</strong><p>발소리 대신 바닥 파문과 배치 규칙을 읽어요.</p></article>
-        <article><span>02</span><strong>들켜도 함께해요</strong><p>탈락 뒤에도 미니 퍼즐로 다음 라운드를 준비해요.</p></article>
-        <article><span>03</span><strong>실력은 팔지 않아요</strong><p>결제는 프로필과 결과 연출처럼 표현에만 사용해요.</p></article>
+        <article><span>01</span><strong>보고 추리해요</strong><p>발소리 대신 움직임 파문과 달라진 사물 배치를 살펴요.</p></article>
+        <article><span>02</span><strong>들켜도 함께해요</strong><p>발견된 뒤에도 무음 팀 신호로 남은 동료를 도와요.</p></article>
+        <article><span>03</span><strong>실력은 팔지 않아요</strong><p>현재 능력치나 승률을 판매하는 결제 기능은 없습니다.</p></article>
       </section>
 
       <section className="landing-details">
@@ -95,14 +95,14 @@ export default function Home() {
         </div>
         <div className="detail-cards">
           <article><span aria-hidden="true">⌾</span><div><strong>움직임 렌즈</strong><p>정답 대신 최근 움직임이 있었던 넓은 구역만 보여줘 추리를 돕습니다.</p></div></article>
-          <article><span aria-hidden="true">⇄</span><div><strong>딱 한 번 자리바꿈</strong><p>같은 종류의 사물과 위치를 바꿔 관찰자의 기억을 흔들 수 있습니다.</p></div></article>
+          <article><span aria-hidden="true">⇄</span><div><strong>맵 전체에서 딱 한 번</strong><p>거리와 관계없이 같은 종류의 무작위 사물과 위치를 바꿔 관찰자의 기억을 흔듭니다.</p></div></article>
           <article><span aria-hidden="true">◫</span><div><strong>무음 팀 신호</strong><p>“여기 확인”, “관찰자 주의”를 모양과 문구로 빠르게 공유합니다.</p></div></article>
           <article><span aria-hidden="true">✦</span><div><strong>3라운드 역할 순환</strong><p>역할 이력을 반영해 특정 사람만 계속 관찰자가 되지 않게 합니다.</p></div></article>
         </div>
       </section>
 
       <section className="landing-cta">
-        <div><small>4인 9분 · 10인 최대 13분 30초</small><h2>별명 하나면 준비 끝.</h2><p>실제 화면 안내를 본 뒤 난이도별 AI 방을 만들거나, 친구와 공개방에 합류하세요.</p></div>
+        <div><small>4인 9분 · 10인 최대 13분 30초</small><h2>별명 하나면 준비 끝.</h2><p>난이도를 고른 친구·AI 방을 만들거나, 빠른 매칭과 초대 코드로 바로 합류하세요.</p></div>
         <a className="primary-button" href="/game">잡화점 입장하기</a>
       </section>
 

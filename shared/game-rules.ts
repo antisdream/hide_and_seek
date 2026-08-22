@@ -1,4 +1,4 @@
-import type { GameRules } from "./game-types";
+import type { GameRules, PropKind, StaticProp } from "./game-types";
 
 export const DEFAULT_RULES: GameRules = {
   tickRate: 30,
@@ -19,7 +19,6 @@ export const DEFAULT_RULES: GameRules = {
   wrongTagPenalty: 25,
   focusRecoveryPerSecond: 5,
   focusRecoveryDelayMs: 5_000,
-  swapDistance: 2.5,
   lensCooldownMs: 30_000,
   missionHoldMs: 2_000,
 };
@@ -121,4 +120,17 @@ export function normalizeMove(x: number, y: number): { x: number; y: number } {
   const length = Math.hypot(safeX, safeY);
   if (length <= 1) return { x: safeX, y: safeY };
   return { x: safeX / length, y: safeY / length };
+}
+
+/** 맵 전체에서 같은 종류의 사물을 거리 가중치 없이 균등하게 하나 고른다. */
+export function pickGlobalSwapTarget(
+  props: readonly StaticProp[],
+  propKind: PropKind,
+  random: () => number = Math.random,
+): StaticProp | undefined {
+  const candidates = props.filter((prop) => prop.kind === propKind);
+  if (candidates.length === 0) return undefined;
+  const roll = random();
+  const normalizedRoll = Number.isFinite(roll) ? Math.max(0, Math.min(0.999_999_999, roll)) : 0;
+  return candidates[Math.floor(normalizedRoll * candidates.length)];
 }

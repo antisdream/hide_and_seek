@@ -1,5 +1,5 @@
 import type Phaser from "phaser";
-import { isBlocked } from "../../shared/geometry";
+import { MAX_MOVEMENT_DELTA_MS, moveWithCollisions } from "../../shared/geometry";
 import type {
   GameEffect,
   GameSnapshot,
@@ -35,6 +35,8 @@ interface EntityView {
   signature: string;
   controlled: boolean;
   samples: MotionSample[];
+  motionRipple?: Phaser.GameObjects.Graphics;
+  lockAura?: Phaser.GameObjects.Graphics;
 }
 
 export interface MotionSample {
@@ -42,6 +44,7 @@ export interface MotionSample {
   x: number;
   y: number;
   rotation: number;
+  teleportRevision: number;
 }
 
 interface MapPalette {
@@ -58,11 +61,12 @@ const VIEW_WIDTH = 24 * TILE;
 const VIEW_HEIGHT = 16 * TILE;
 const PREVIEW_MAX_ZOOM = 1.25;
 const MOVEMENT_RESPONSE_MS = 28;
-const REMOTE_INTERPOLATION_DELAY_MS = 50;
+const REMOTE_INTERPOLATION_DELAY_MS = 75;
 const MAX_EXTRAPOLATION_MS = 66;
+const MAX_LOCAL_AUTHORITY_PROJECTION_MS = 250;
 const PORTAL_SNAP_DISTANCE = TILE * 4;
 
-/** 서버 스냅숏 사이에서도 프레임 시간에 비례해 같은 체감 속도로 좌표를 보간한다. */
+/** 정지 후 권위 좌표를 따라갈 때 프레임 길이에 관계없이 같은 비율로 보정한다. */
 export function movementSmoothingBlend(deltaMs: number, responseMs = MOVEMENT_RESPONSE_MS): number {
   const safeDelta = Number.isFinite(deltaMs) ? Math.max(0, deltaMs) : 0;
   const safeResponse = Number.isFinite(responseMs) ? Math.max(1, responseMs) : MOVEMENT_RESPONSE_MS;
@@ -86,7 +90,10 @@ export function sampleMotionAt(
     const previous = samples[index - 1];
     const next = samples[index];
     if (renderServerTime > next.serverTime) continue;
-    if (Math.hypot(next.x - previous.x, next.y - previous.y) > PORTAL_SNAP_DISTANCE) {
+    if (
+      next.teleportRevision !== previous.teleportRevision
+      || Math.hypot(next.x - previous.x, next.y - previous.y) > PORTAL_SNAP_DISTANCE
+    ) {
       return { ...(renderServerTime < next.serverTime ? previous : next) };
     }
     const span = Math.max(1, next.serverTime - previous.serverTime);
@@ -96,13 +103,18 @@ export function sampleMotionAt(
       x: previous.x + (next.x - previous.x) * ratio,
       y: previous.y + (next.y - previous.y) * ratio,
       rotation: interpolateAngle(previous.rotation, next.rotation, ratio),
+      teleportRevision: previous.teleportRevision,
     };
   }
 
   const latest = samples[samples.length - 1];
   const previous = samples[samples.length - 2];
   const span = latest.serverTime - previous.serverTime;
-  if (span <= 0 || Math.hypot(latest.x - previous.x, latest.y - previous.y) > PORTAL_SNAP_DISTANCE) {
+  if (
+    span <= 0
+    || latest.teleportRevision !== previous.teleportRevision
+    || Math.hypot(latest.x - previous.x, latest.y - previous.y) > PORTAL_SNAP_DISTANCE
+  ) {
     return { ...latest };
   }
   const extraMs = Math.max(0, Math.min(maxExtrapolationMs, renderServerTime - latest.serverTime));
@@ -111,6 +123,7 @@ export function sampleMotionAt(
     x: latest.x + ((latest.x - previous.x) / span) * extraMs,
     y: latest.y + ((latest.y - previous.y) / span) * extraMs,
     rotation: latest.rotation,
+    teleportRevision: latest.teleportRevision,
   };
 }
 
@@ -122,17 +135,50 @@ export function predictLocalMovement(
   deltaMs: number,
   map: MapLayout,
 ): Point {
-  const safeDelta = Number.isFinite(deltaMs) ? Math.max(0, Math.min(50, deltaMs)) : 0;
-  const length = Math.hypot(input.x, input.y);
-  if (length <= 0 || !Number.isFinite(speed) || speed <= 0) return { ...point };
-  const direction = length > 1 ? { x: input.x / length, y: input.y / length } : input;
-  const step = speed * (safeDelta / 1_000);
-  const next = { ...point };
-  const nextX = { x: point.x + direction.x * step, y: point.y };
-  if (!isBlocked(nextX, 0.36, map)) next.x = nextX.x;
-  const nextY = { x: next.x, y: point.y + direction.y * step };
-  if (!isBlocked(nextY, 0.36, map)) next.y = nextY.y;
-  return next;
+  return moveWithCollisions(point, input, speed, deltaMs, map);
+}
+
+/**
+ * 가장 최근 권위 좌표를 현재 서버 시각까지 투영한다.
+ * 화면의 이전 위치를 과거 스냅숏 쪽으로 당기지 않아 이동 중 고무줄 현상을 만들지 않는다.
+ */
+export function projectLocalAuthorityMotion(
+  authority: MotionSample,
+  input: Point,
+  speed: number,
+  currentServerTime: number,
+  map: MapLayout,
+): MotionSample {
+  const elapsedMs = Math.max(0, Math.min(
+    MAX_LOCAL_AUTHORITY_PROJECTION_MS,
+    currentServerTime - authority.serverTime,
+  ));
+  let remainingMs = elapsedMs;
+  let projected = { x: authority.x / TILE, y: authority.y / TILE };
+  while (remainingMs > 0) {
+    const stepMs = Math.min(MAX_MOVEMENT_DELTA_MS, remainingMs);
+    projected = moveWithCollisions(projected, input, speed, stepMs, map);
+    remainingMs -= stepMs;
+  }
+  const moving = Math.hypot(input.x, input.y) > 0;
+  return {
+    serverTime: authority.serverTime + elapsedMs,
+    x: projected.x * TILE,
+    y: projected.y * TILE,
+    rotation: moving ? Math.atan2(input.y, input.x) : authority.rotation,
+    teleportRevision: authority.teleportRevision,
+  };
+}
+
+/** 이동 중 표시 좌표를 현재 시각까지 투영한 서버 좌표에 조금씩 맞춰 큰 순간이동을 막는다. */
+export function reconcileLocalPosition(display: Point, authority: Point, deltaMs: number): Point {
+  const gap = Math.hypot(authority.x - display.x, authority.y - display.y);
+  const responseMs = gap > TILE * 2 ? 70 : 180;
+  const blend = movementSmoothingBlend(deltaMs, responseMs);
+  return {
+    x: display.x + (authority.x - display.x) * blend,
+    y: display.y + (authority.y - display.y) * blend,
+  };
 }
 
 function interpolateAngle(from: number, to: number, ratio: number): number {
@@ -179,6 +225,7 @@ export async function mountGameRenderer(
   callbacks: RendererCallbacks,
 ): Promise<GameRenderer> {
   const PhaserRuntime = (await import("phaser")).default;
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   class NightStationeryScene extends PhaserRuntime.Scene {
     private snapshot?: GameSnapshot;
@@ -203,6 +250,7 @@ export async function mountGameRenderer(
     private previewWorldWidth = VIEW_WIDTH;
     private previewWorldHeight = VIEW_HEIGHT;
     private localMovement: Point = { x: 0, y: 0 };
+    private localMovementChangedAt = 0;
     private serverClockOffset = 0;
     private hasServerClockOffset = false;
 
@@ -234,37 +282,61 @@ export async function mountGameRenderer(
         this.redrawTransients();
       }
 
-      const renderServerTime = now + this.serverClockOffset - REMOTE_INTERPOLATION_DELAY_MS;
+      const currentServerTime = now + this.serverClockOffset;
+      const renderServerTime = currentServerTime - REMOTE_INTERPOLATION_DELAY_MS;
       for (const view of this.entityViews.values()) {
         const latest = view.samples[view.samples.length - 1];
         if (!latest) continue;
-        if (view.controlled && this.canPredictLocalMovement()) {
-          const predicted = predictLocalMovement(
-            { x: view.container.x / TILE, y: view.container.y / TILE },
+
+        // 움직임·고정 표시는 로컬/원격 여부와 관계없이 같은 프레임 주기로 갱신한다.
+        if (view.motionRipple?.visible) {
+          const pulse = reducedMotion ? 0.38 : (now % 720) / 720;
+          view.motionRipple.setScale(0.7 + pulse * 0.85).setAlpha(0.72 * (1 - pulse));
+        }
+        if (view.lockAura?.visible) {
+          const pulse = reducedMotion ? 0.82 : 0.78 + Math.sin(now / 150) * 0.08;
+          view.lockAura.setScale(pulse).setAlpha(0.78);
+        }
+
+        if (view.controlled) {
+          if (!this.canPredictLocalMovement()) {
+            view.container.setPosition(latest.x, latest.y);
+            view.container.setRotation(latest.rotation);
+            continue;
+          }
+          const projected = projectLocalAuthorityMotion(
+            latest,
             this.localMovement,
             this.snapshot?.self.movementSpeed ?? 0,
-            delta,
+            currentServerTime,
             this.snapshot!.map,
           );
-          view.container.setPosition(predicted.x * TILE, predicted.y * TILE);
-          const authorityGap = Math.hypot(latest.x - view.container.x, latest.y - view.container.y);
-          if (authorityGap > PORTAL_SNAP_DISTANCE) {
-            view.container.setPosition(latest.x, latest.y);
-          } else {
-            const moving = Math.hypot(this.localMovement.x, this.localMovement.y) > 0;
-            const correction = movementSmoothingBlend(delta, moving ? 210 : 58);
-            view.container.x += (latest.x - view.container.x) * correction;
-            view.container.y += (latest.y - view.container.y) * correction;
-          }
-          if (Math.hypot(this.localMovement.x, this.localMovement.y) > 0) {
-            view.container.rotation = Math.atan2(this.localMovement.y, this.localMovement.x);
-          } else {
-            view.container.rotation = interpolateAngle(
-              view.container.rotation,
-              latest.rotation,
-              movementSmoothingBlend(delta, 58),
+          const moving = Math.hypot(this.localMovement.x, this.localMovement.y) > 0;
+          if (moving) {
+            // 내 화면은 매 렌더 프레임마다 공용 충돌 계산으로 전진한다.
+            // 현재 시각까지 투영한 권위 좌표와 작은 오차를 연속 보정해 방향 전환·지연에도 큰 스냅을 만들지 않는다.
+            const predicted = predictLocalMovement(
+              { x: view.container.x / TILE, y: view.container.y / TILE },
+              this.localMovement,
+              this.snapshot?.self.movementSpeed ?? 0,
+              delta,
+              this.snapshot!.map,
             );
+            const reconciled = reconcileLocalPosition(
+              { x: predicted.x * TILE, y: predicted.y * TILE },
+              projected,
+              delta,
+            );
+            view.container.setPosition(reconciled.x, reconciled.y);
+          } else if (now - this.localMovementChangedAt > 90) {
+            // 키를 놓은 직후에는 마지막 서버 입력이 도착할 시간을 주고, 이후 작은 오차만 부드럽게 정리한다.
+            const correction = movementSmoothingBlend(delta, 72);
+            view.container.x += (projected.x - view.container.x) * correction;
+            view.container.y += (projected.y - view.container.y) * correction;
           }
+          view.container.rotation = moving
+            ? projected.rotation
+            : interpolateAngle(view.container.rotation, projected.rotation, movementSmoothingBlend(delta, 58));
           continue;
         }
 
@@ -286,6 +358,9 @@ export async function mountGameRenderer(
     }
 
     setLocalMovement(movement: Point): void {
+      if (movement.x !== this.localMovement.x || movement.y !== this.localMovement.y) {
+        this.localMovementChangedAt = Date.now();
+      }
       this.localMovement = { x: movement.x, y: movement.y };
     }
 
@@ -330,7 +405,7 @@ export async function mountGameRenderer(
       const root = this.add.container(0, 0);
       this.staticWorld = root;
       const palette = paletteFor(snapshot.map.theme);
-      root.add(this.drawFloor(snapshot.map.width, snapshot.map.height, palette));
+      root.add(this.drawFloor(snapshot.map.width, snapshot.map.height, palette, snapshot.map.theme));
 
       for (const zone of snapshot.map.zones) {
         const ring = this.add.graphics();
@@ -367,6 +442,7 @@ export async function mountGameRenderer(
           obstacle.height * TILE,
           8,
         );
+        this.decorateObstacle(structure, obstacle, snapshot.map.theme, palette);
         root.add(structure);
       }
 
@@ -402,6 +478,7 @@ export async function mountGameRenderer(
           x: entity.x * TILE,
           y: entity.y * TILE,
           rotation: (entity.rotation * Math.PI) / 180,
+          teleportRevision: entity.teleportRevision,
         };
         let view = this.entityViews.get(entity.id);
         if (!view || view.signature !== signature) {
@@ -412,13 +489,25 @@ export async function mountGameRenderer(
           container.setPosition(previousPosition?.x ?? sample.x, previousPosition?.y ?? sample.y);
           container.setRotation(previousRotation ?? sample.rotation);
           this.entityWorld.add(container);
-          view = { container, signature, controlled: entity.controlled, samples: [sample] };
+          const motionRipple = container.getByName("movement-ripple") as Phaser.GameObjects.Graphics | undefined;
+          const lockAura = container.getByName("lock-aura") as Phaser.GameObjects.Graphics | undefined;
+          motionRipple?.setVisible(entity.moving);
+          lockAura?.setVisible(Boolean(entity.controlled && this.snapshot?.self.locked));
+          view = { container, signature, controlled: entity.controlled, samples: [sample], motionRipple, lockAura };
           this.entityViews.set(entity.id, view);
         } else {
           view.controlled = entity.controlled;
+          view.motionRipple?.setVisible(entity.moving);
+          view.lockAura?.setVisible(Boolean(entity.controlled && this.snapshot?.self.locked));
           const latest = view.samples[view.samples.length - 1];
           if (!latest || sample.serverTime > latest.serverTime) {
-            if (latest && Math.hypot(sample.x - latest.x, sample.y - latest.y) > PORTAL_SNAP_DISTANCE) {
+            if (
+              latest
+              && (
+                sample.teleportRevision !== latest.teleportRevision
+                || Math.hypot(sample.x - latest.x, sample.y - latest.y) > PORTAL_SNAP_DISTANCE
+              )
+            ) {
               view.samples = [sample];
               view.container.setPosition(sample.x, sample.y);
               view.container.setRotation(sample.rotation);
@@ -559,7 +648,7 @@ export async function mountGameRenderer(
       this.waitingWorld?.destroy(true);
       const root = this.add.container(0, 0);
       this.waitingWorld = root;
-      root.add(this.drawFloor(24, 16, paletteFor("stationery")));
+      root.add(this.drawFloor(24, 16, paletteFor("stationery"), "stationery"));
       root.add(this.add.text(480, 292, "수상한 잡화점을 정리하는 중…", {
         color: "#fff9ec",
         fontFamily: "Pretendard, sans-serif",
@@ -573,16 +662,61 @@ export async function mountGameRenderer(
       }).setOrigin(0.5));
     }
 
-    private drawFloor(width: number, height: number, palette: MapPalette): Phaser.GameObjects.Graphics {
+    private drawFloor(
+      width: number,
+      height: number,
+      palette: MapPalette,
+      theme: MapTheme,
+    ): Phaser.GameObjects.Graphics {
       const floor = this.add.graphics();
       floor.fillStyle(palette.floor, 1);
       floor.fillRect(0, 0, width * TILE, height * TILE);
       floor.lineStyle(1, palette.grid, 0.65);
       for (let x = 0; x <= width; x += 1) floor.lineBetween(x * TILE, 0, x * TILE, height * TILE);
       for (let y = 0; y <= height; y += 1) floor.lineBetween(0, y * TILE, width * TILE, y * TILE);
+      if (theme === "warehouse") {
+        floor.lineStyle(3, 0xffc96b, 0.18);
+        for (let x = 2; x < width; x += 6) floor.lineBetween(x * TILE, 0, (x + 3) * TILE, height * TILE);
+      } else if (theme === "workshop") {
+        floor.fillStyle(0xffd76a, 0.14);
+        for (let x = 2; x < width; x += 4) {
+          for (let y = 2; y < height; y += 4) floor.fillCircle(x * TILE, y * TILE, 4);
+        }
+      } else {
+        floor.lineStyle(2, 0x9cb0ff, 0.12);
+        for (let y = 2; y < height; y += 5) floor.lineBetween(0, y * TILE, width * TILE, y * TILE);
+      }
       floor.lineStyle(5, 0x15182c, 1);
       floor.strokeRect(2, 2, width * TILE - 4, height * TILE - 4);
       return floor;
+    }
+
+    /** 충돌 판정에는 영향 없이 맵마다 선반·화물대·작업대의 인상을 구분한다. */
+    private decorateObstacle(
+      graphics: Phaser.GameObjects.Graphics,
+      obstacle: GameSnapshot["map"]["obstacles"][number],
+      theme: MapTheme,
+      palette: MapPalette,
+    ): void {
+      const left = obstacle.x * TILE;
+      const top = obstacle.y * TILE;
+      const width = obstacle.width * TILE;
+      const height = obstacle.height * TILE;
+      if (theme === "warehouse") {
+        graphics.lineStyle(4, 0xffd76a, 0.52);
+        const stripeGap = 34;
+        for (let offset = -height; offset < width; offset += stripeGap) {
+          graphics.lineBetween(left + offset, top + height, left + offset + height, top);
+        }
+      } else if (theme === "workshop") {
+        graphics.fillStyle(0xffd76a, 0.34);
+        for (let x = left + 18; x < left + width; x += 42) graphics.fillCircle(x, top + height / 2, 4);
+        graphics.lineStyle(2, 0xffb5df, 0.38);
+        graphics.lineBetween(left + 8, top + height / 2, left + width - 8, top + height / 2);
+      } else {
+        graphics.lineStyle(2, palette.accent, 0.28);
+        for (let x = left + 52; x < left + width; x += 80) graphics.lineBetween(x, top + 5, x, top + height - 5);
+      }
     }
 
     private drawPortal(
@@ -607,13 +741,25 @@ export async function mountGameRenderer(
         padding: { x: 7, y: 4 },
       }).setOrigin(0.5, 1);
       container.add([gate, label]);
+      if (!reducedMotion) {
+        this.tweens.add({
+          targets: gate,
+          scaleX: 1.08,
+          scaleY: 1.08,
+          alpha: 0.7,
+          duration: 760,
+          ease: "Sine.InOut",
+          yoyo: true,
+          repeat: -1,
+        });
+      }
       return container;
     }
 
     private drawEntity(entity: WorldEntity): Phaser.GameObjects.Container {
       const container = this.add.container(entity.x * TILE, entity.y * TILE);
       if (entity.category === "seeker") this.drawSeeker(container, entity);
-      else this.drawProp(container, entity.propKind ?? "notebook", entity);
+      else this.drawProp(container, entity.propKind ?? "notebook", entity, this.snapshot?.map.theme ?? "stationery");
       container.setSize(42, 42).setInteractive({ useHandCursor: true });
       container.on("pointerdown", () => {
         if (this.snapshot?.seekerPreview) return;
@@ -627,16 +773,43 @@ export async function mountGameRenderer(
       container: Phaser.GameObjects.Container,
       kind: PropKind,
       entity: WorldEntity,
+      theme: MapTheme,
     ): void {
+      const motionRipple = this.add.graphics().setName("movement-ripple");
+      motionRipple.lineStyle(3, theme === "workshop" ? 0xffb5df : 0x9cb0ff, 0.72);
+      motionRipple.strokeCircle(0, 0, 27);
+      motionRipple.strokeCircle(0, 0, 37);
+      motionRipple.setVisible(false);
+
+      const lockAura = this.add.graphics().setName("lock-aura");
+      lockAura.fillStyle(0x63d6b5, 0.12);
+      lockAura.fillRoundedRect(-31, -31, 62, 62, 18);
+      lockAura.lineStyle(4, 0x63d6b5, 0.9);
+      lockAura.strokeRoundedRect(-31, -31, 62, 62, 18);
+      lockAura.setVisible(false);
+
       const body = this.add.graphics();
-      body.fillStyle(propColor(kind), 1);
+      body.fillStyle(propColor(kind, theme), 1);
       body.lineStyle(
         entity.controlled ? 4 : entity.teammate ? 3 : 2,
         entity.controlled ? 0xffd76a : entity.teammate ? 0x63d6b5 : 0x171a33,
         1,
       );
 
-      if (kind === "pencil") {
+      if (kind === "pencil" && theme === "warehouse") {
+        body.fillRoundedRect(-23, -8, 46, 16, 5);
+        body.strokeRoundedRect(-23, -8, 46, 16, 5);
+        body.fillStyle(0x25213a, 0.85);
+        body.fillRect(-13, -8, 7, 16);
+        body.fillRect(2, -8, 7, 16);
+      } else if (kind === "pencil" && theme === "workshop") {
+        body.fillRoundedRect(-23, -6, 38, 12, 6);
+        body.strokeRoundedRect(-23, -6, 38, 12, 6);
+        body.fillStyle(0xffd76a, 1);
+        body.fillTriangle(15, -11, 30, 0, 15, 11);
+        body.fillStyle(0xff8f85, 1);
+        body.fillCircle(-19, 0, 7);
+      } else if (kind === "pencil") {
         body.fillRoundedRect(-22, -7, 44, 14, 6);
         body.strokeRoundedRect(-22, -7, 44, 14, 6);
         body.fillStyle(0xfff1ca, 1);
@@ -644,29 +817,63 @@ export async function mountGameRenderer(
       } else if (kind === "tape") {
         body.fillCircle(0, 0, 19);
         body.strokeCircle(0, 0, 19);
-        body.fillStyle(0x28304a, 1);
+        body.fillStyle(theme === "warehouse" ? 0x171a2f : 0x28304a, 1);
         body.fillCircle(0, 0, 8);
+        if (theme === "workshop") {
+          body.fillStyle(0xffd76a, 0.9);
+          body.fillCircle(0, -14, 3);
+          body.fillCircle(13, 5, 3);
+          body.fillCircle(-11, 8, 3);
+        }
       } else if (kind === "ribbon") {
-        body.fillCircle(0, -3, 12);
-        body.fillTriangle(-5, 5, -18, 24, 0, 16);
-        body.fillTriangle(5, 5, 18, 24, 0, 16);
-        body.strokeCircle(0, -3, 12);
+        if (theme === "warehouse") {
+          body.fillRoundedRect(-20, -14, 40, 28, 5);
+          body.strokeRoundedRect(-20, -14, 40, 28, 5);
+          body.lineStyle(2, 0xffd76a, 0.9);
+          body.lineBetween(-14, -5, 14, -5);
+          body.lineBetween(-14, 4, 5, 4);
+        } else {
+          body.fillCircle(0, -3, 12);
+          body.fillTriangle(-5, 5, -18, 24, 0, 16);
+          body.fillTriangle(5, 5, 18, 24, 0, 16);
+          body.strokeCircle(0, -3, 12);
+        }
       } else if (kind === "eraser") {
-        body.fillRoundedRect(-21, -13, 42, 26, 10);
-        body.strokeRoundedRect(-21, -13, 42, 26, 10);
+        const radius = theme === "workshop" ? 16 : 10;
+        body.fillRoundedRect(-21, -13, 42, 26, radius);
+        body.strokeRoundedRect(-21, -13, 42, 26, radius);
+        if (theme === "warehouse") {
+          body.lineStyle(3, 0xffd76a, 0.72);
+          body.lineBetween(-10, -13, 10, 13);
+        }
       } else if (kind === "box") {
         body.fillRoundedRect(-21, -19, 42, 38, 5);
         body.strokeRoundedRect(-21, -19, 42, 38, 5);
         body.lineStyle(2, 0x171a33, 0.65);
         body.lineBetween(-21, -6, 21, -6);
+        if (theme === "workshop") {
+          body.lineStyle(4, 0xffd76a, 0.86);
+          body.lineBetween(0, -19, 0, 19);
+          body.lineBetween(-21, 0, 21, 0);
+        } else if (theme === "warehouse") {
+          body.lineBetween(-21, 19, 21, -19);
+          body.lineBetween(-21, -19, 21, 19);
+        }
       } else {
         body.fillRoundedRect(-19, -24, 38, 48, 6);
         body.strokeRoundedRect(-19, -24, 38, 48, 6);
         body.lineStyle(2, 0xffffff, 0.5);
         body.lineBetween(-11, -13, 11, -13);
         body.lineBetween(-11, -6, 8, -6);
+        if (theme === "workshop") {
+          body.fillStyle(0xffd76a, 0.88);
+          body.fillCircle(0, 11, 4);
+        } else if (theme === "warehouse") {
+          body.lineStyle(3, 0xffc96b, 0.8);
+          body.lineBetween(-18, 10, 18, 10);
+        }
       }
-      container.add(body);
+      container.add([motionRipple, lockAura, body]);
 
       const face = this.add.graphics();
       face.fillStyle(0x24213a, 1);
@@ -766,11 +973,15 @@ export async function mountGameRenderer(
         : { x: 12, y: 8 };
       const container = this.add.container((effect.x ?? fallback.x) * TILE, (effect.y ?? fallback.y) * TILE);
       const ring = this.add.graphics();
-      const color = effect.type === "correct-tag" || effect.type === "mission" || effect.type === "portal"
-        ? 0x63d6b5
-        : 0xff6f61;
+      const color = effectColor(effect.type);
       ring.lineStyle(4, color, 0.9);
       ring.strokeCircle(0, 0, effect.type === "portal" ? 42 : 31);
+      if (effect.type === "swap" || effect.type === "correct-tag" || effect.type === "mission") {
+        ring.fillStyle(color, 0.9);
+        for (const [x, y] of [[-30, -17], [29, -11], [-23, 23], [25, 20]]) {
+          ring.fillCircle(x, y, effect.type === "swap" ? 4 : 3);
+        }
+      }
       const label = this.add.text(0, -48, effect.label, {
         color: "#ffffff",
         backgroundColor: "#25213add",
@@ -780,6 +991,18 @@ export async function mountGameRenderer(
         padding: { x: 8, y: 5 },
       }).setOrigin(0.5);
       container.add([ring, label]);
+      if (!reducedMotion) {
+        this.tweens.add({
+          targets: ring,
+          scaleX: 1.45,
+          scaleY: 1.45,
+          alpha: 0.08,
+          duration: effect.type === "wrong-tag" || effect.type === "focus-empty" ? 420 : 720,
+          ease: "Cubic.Out",
+          yoyo: true,
+        });
+        this.tweens.add({ targets: label, y: -57, duration: 480, ease: "Back.Out" });
+      }
       return container;
     }
 
@@ -798,6 +1021,9 @@ export async function mountGameRenderer(
         padding: { x: 7, y: 4 },
       }).setOrigin(0.5);
       container.add([ring, label]);
+      if (!reducedMotion) {
+        this.tweens.add({ targets: ring, scaleX: 1.25, scaleY: 1.25, alpha: 0.18, duration: 680, yoyo: true });
+      }
       return container;
     }
   }
@@ -874,15 +1100,46 @@ function paletteFor(theme: MapTheme | undefined): MapPalette {
   return palettes[theme ?? "stationery"] ?? palettes.stationery;
 }
 
-function propColor(kind: PropKind): number {
-  return {
-    pencil: 0xffd76a,
-    notebook: 0x698cff,
-    tape: 0x63d6b5,
-    eraser: 0xff8f85,
-    box: 0xc99b73,
-    ribbon: 0xb996f4,
-  }[kind];
+function propColor(kind: PropKind, theme: MapTheme): number {
+  const colors: Record<MapTheme, Record<PropKind, number>> = {
+    stationery: {
+      pencil: 0xffd76a,
+      notebook: 0x698cff,
+      tape: 0x63d6b5,
+      eraser: 0xff8f85,
+      box: 0xc99b73,
+      ribbon: 0xb996f4,
+    },
+    warehouse: {
+      pencil: 0xffc04f,
+      notebook: 0x6f8fa8,
+      tape: 0x4bc6b1,
+      eraser: 0xd77f64,
+      box: 0xb57d46,
+      ribbon: 0x8292b8,
+    },
+    workshop: {
+      pencil: 0xff8f85,
+      notebook: 0xa88bf4,
+      tape: 0x76d9c1,
+      eraser: 0xffb5df,
+      box: 0xd89b68,
+      ribbon: 0xf096c4,
+    },
+  };
+  return colors[theme][kind];
+}
+
+function effectColor(type: GameEffect["type"]): number {
+  return ({
+    "correct-tag": 0x63d6b5,
+    mission: 0xffd76a,
+    portal: 0x65d9f2,
+    swap: 0xb996f4,
+    phase: 0x9cb0ff,
+    "wrong-tag": 0xff6f61,
+    "focus-empty": 0xff435f,
+  } satisfies Record<GameEffect["type"], number>)[type];
 }
 
 function pingLabel(kind: TeamPing["kind"]): string {

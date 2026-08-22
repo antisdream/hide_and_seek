@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ColyseusSDK, type Room } from "@colyseus/sdk";
 import { FAST_TEST_RULES } from "../../shared/game-rules";
-import type { GameSnapshot } from "../../shared/game-types";
+import type { GameEffect, GameSnapshot } from "../../shared/game-types";
 import { MAP_CATALOG } from "../../shared/map-generator";
 import { createNunchisoomServer } from "../../server/index";
 
@@ -361,6 +361,109 @@ test("세 라운드 AI 방은 관찰자를 연속 배정하지 않고 AI 관찰�
   }
 });
 
+test("위치 고정은 이동 heartbeat를 막고 전역 자리바꿈은 술래에게 좌표를 숨긴다", { timeout: 15_000 }, async () => {
+  const runtime = createNunchisoomServer({
+    allowedOrigins: [],
+    databasePath: ":memory:",
+    rules: {
+      ...FAST_TEST_RULES,
+      countdownMs: 80,
+      hidingMs: 3_000,
+      seekingMs: 1_500,
+      resultMs: 80,
+    },
+    greet: false,
+  });
+  const rooms: Room[] = [];
+  try {
+    const port = await runtime.listen(0);
+    const clients = Array.from({ length: 4 }, () => new ColyseusSDK(`http://127.0.0.1:${port}`));
+    for (let index = 0; index < clients.length; index += 1) {
+      const joinedRoom = await clients[index].joinOrCreate("nunchisoom", {
+        mode: "public",
+        displayName: `고정검증자${index + 1}`,
+        deviceId: `lock-swap-device-${index + 1}`,
+      });
+      registerExpectedMessages(joinedRoom);
+      rooms.push(joinedRoom);
+    }
+
+    const hidingPromises = rooms.map((room) => waitForSnapshot(room, (state) => state.phase === "HIDING"));
+    for (const room of rooms) room.send("ready", true);
+    const hidingStates = await Promise.all(hidingPromises);
+    const hiderIndex = hidingStates.findIndex((state) => state.self.role === "HIDER");
+    const seekerIndex = hidingStates.findIndex((state) => state.self.role === "SEEKER");
+    assert.ok(hiderIndex >= 0);
+    assert.ok(seekerIndex >= 0);
+    const hiderRoom = rooms[hiderIndex];
+    const seekerRoom = rooms[seekerIndex];
+
+    const lockedPromise = waitForSnapshot(hiderRoom, (state) => state.phase === "HIDING" && state.self.locked);
+    hiderRoom.send("lock", true);
+    const locked = await lockedPromise;
+    const lockedEntity = locked.entities.find((entity) => entity.controlled);
+    assert.ok(lockedEntity);
+
+    hiderRoom.send("move", { seq: 1, x: 1, y: 1 });
+    const afterHeartbeat = await waitForSnapshot(
+      hiderRoom,
+      (state) => state.phase === "HIDING" && state.self.locked && state.serverTime >= locked.serverTime + 220,
+    );
+    const heldEntity = afterHeartbeat.entities.find((entity) => entity.controlled);
+    assert.ok(heldEntity);
+    assert.ok(Math.hypot(heldEntity.x - lockedEntity.x, heldEntity.y - lockedEntity.y) < 0.001);
+
+    const seeking = await waitForSnapshot(hiderRoom, (state) => state.phase === "SEEKING");
+    const beforeSwap = seeking.entities.find((entity) => entity.controlled);
+    assert.ok(beforeSwap);
+    assert.equal(seeking.self.locked, true);
+    const seekerBeforeSwap = await waitForSnapshot(seekerRoom, (state) => state.phase === "SEEKING");
+
+    const hiderEffectPromise = waitForEffect(hiderRoom, (effect) => effect.type === "swap");
+    const seekerEffectPromise = waitForEffect(seekerRoom, (effect) => effect.type === "swap");
+    const swappedPromise = waitForSnapshot(
+      hiderRoom,
+      (state) => state.phase === "SEEKING" && !state.self.swapAvailable && Boolean(
+        state.entities.find((entity) => entity.controlled && entity.teleportRevision > beforeSwap.teleportRevision),
+      ),
+    );
+    hiderRoom.send("swap", true);
+    const [swapped, hiderEffect, seekerEffect] = await Promise.all([
+      swappedPromise,
+      hiderEffectPromise,
+      seekerEffectPromise,
+    ]);
+    const swappedEntity = swapped.entities.find((entity) => entity.controlled);
+    assert.ok(swappedEntity);
+    assert.ok(Math.hypot(swappedEntity.x - beforeSwap.x, swappedEntity.y - beforeSwap.y) > 0.1);
+    assert.notEqual(swappedEntity.id, beforeSwap.id);
+    assert.equal(typeof hiderEffect.x, "number");
+    assert.equal(typeof hiderEffect.y, "number");
+    assert.equal(seekerEffect.x, undefined);
+    assert.equal(seekerEffect.y, undefined);
+    const seekerAfterSwap = await waitForSnapshot(
+      seekerRoom,
+      (state) => state.phase === "SEEKING" && state.serverTime >= swapped.serverTime,
+    );
+    assert.equal(
+      seekerAfterSwap.entities
+        .filter((entity) => entity.category === "prop")
+        .every((entity) => entity.teleportRevision === 0),
+      true,
+    );
+    for (const stableId of [beforeSwap.id, swappedEntity.id]) {
+      const beforeEntity = seekerBeforeSwap.entities.find((entity) => entity.id === stableId);
+      const afterEntity = seekerAfterSwap.entities.find((entity) => entity.id === stableId);
+      assert.ok(beforeEntity);
+      assert.ok(afterEntity);
+      assert.ok(Math.hypot(afterEntity.x - beforeEntity.x, afterEntity.y - beforeEntity.y) < 0.001);
+    }
+  } finally {
+    await Promise.allSettled(rooms.map((room) => room.leave(true)));
+    await runtime.shutdown();
+  }
+});
+
 function registerExpectedMessages(room: Room): void {
   room.onMessage<GameSnapshot>("state", () => {});
   for (const type of ["notice", "effect", "lens", "ping", "action-error"]) {
@@ -384,6 +487,26 @@ function waitForSnapshot(
       clearTimeout(timer);
       removeListener();
       resolve(snapshot);
+    });
+  });
+}
+
+function waitForEffect(
+  room: Room,
+  predicate: (effect: GameEffect) => boolean,
+  timeoutMs = 5_000,
+): Promise<GameEffect> {
+  return new Promise((resolve, reject) => {
+    let removeListener: () => void = () => {};
+    const timer = setTimeout(() => {
+      removeListener();
+      reject(new Error(`효과 대기 시간이 ${timeoutMs}ms를 넘었습니다.`));
+    }, timeoutMs);
+    removeListener = room.onMessage<GameEffect>("effect", (effect) => {
+      if (!predicate(effect)) return;
+      clearTimeout(timer);
+      removeListener();
+      resolve(effect);
     });
   });
 }

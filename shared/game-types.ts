@@ -29,6 +29,8 @@ export interface StaticProp extends Point {
   id: string;
   kind: PropKind;
   rotation: number;
+  /** 자리바꿈처럼 보간하면 안 되는 좌표 변경 횟수다. 맵 원본은 0으로 간주한다. */
+  teleportRevision?: number;
 }
 
 export interface Portal extends Point {
@@ -70,7 +72,6 @@ export interface GameRules {
   wrongTagPenalty: number;
   focusRecoveryPerSecond: number;
   focusRecoveryDelayMs: number;
-  swapDistance: number;
   lensCooldownMs: number;
   missionHoldMs: number;
 }
@@ -99,6 +100,8 @@ export interface WorldEntity extends Point {
   controlled: boolean;
   teammate: boolean;
   caught: boolean;
+  /** 포탈·자리바꿈을 일반 이동 보간과 구분하는 단조 증가 값이다. */
+  teleportRevision: number;
   displayName?: string;
   avatar?: string;
 }

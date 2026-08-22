@@ -27,6 +27,8 @@ interface Notice {
   tone?: "normal" | "error" | "success";
 }
 
+type GuideStage = "LOBBY" | "HIDER_HIDE" | "HIDER_SURVIVE" | "SEEKER_PREVIEW" | "SEEKER_SEARCH";
+
 const CONFIGURED_GAME_ENDPOINT = process.env.NEXT_PUBLIC_GAME_SERVER_URL;
 const MOVE_SEND_INTERVAL_MS = 100;
 const HUD_UPDATE_INTERVAL_MS = 100;
@@ -49,14 +51,18 @@ export default function GameClient() {
   const sequenceRef = useRef(0);
   const pressedKeysRef = useRef(new Set<string>());
   const snapshotRef = useRef<GameSnapshot | undefined>(undefined);
-  const previousPhaseRef = useRef<GamePhase | undefined>(undefined);
+  const localMovementLockedRef = useRef(false);
+  const pendingLockRef = useRef<{ locked: boolean; requestedAt: number } | undefined>(undefined);
+  const previousGuideStageRef = useRef<GuideStage | undefined>(undefined);
   const pendingHudSnapshotRef = useRef<GameSnapshot | undefined>(undefined);
   const hudTimerRef = useRef<number | undefined>(undefined);
   const hudPublishedAtRef = useRef(0);
   const hudSemanticKeyRef = useRef("");
 
   const sendMovementNow = useCallback(() => {
-    const direction = movementFromKeys(pressedKeysRef.current);
+    const current = snapshotRef.current;
+    const movementBlocked = Boolean(localMovementLockedRef.current || current?.self.caught);
+    const direction = movementBlocked ? { x: 0, y: 0 } : movementFromKeys(pressedKeysRef.current);
     rendererRef.current?.setLocalMovement(direction);
     const activeRoom = roomRef.current;
     if (!activeRoom) return;
@@ -75,6 +81,21 @@ export default function GameClient() {
   const receiveSnapshot = useCallback((nextSnapshot: GameSnapshot) => {
     snapshotRef.current = nextSnapshot;
     rendererRef.current?.pushSnapshot(nextSnapshot);
+    const pendingLock = pendingLockRef.current;
+    if (pendingLock && nextSnapshot.self.locked === pendingLock.locked) {
+      pendingLockRef.current = undefined;
+      localMovementLockedRef.current = nextSnapshot.self.locked;
+    } else if (pendingLock && Date.now() - pendingLock.requestedAt <= 1_000) {
+      // 잠금 요청이 서버 상태에 반영되기 전까지는 클릭 시점의 안전한 이동 차단을 유지한다.
+      localMovementLockedRef.current = pendingLock.locked ? true : nextSnapshot.self.locked;
+    } else {
+      pendingLockRef.current = undefined;
+      localMovementLockedRef.current = nextSnapshot.self.locked;
+    }
+    if (localMovementLockedRef.current || nextSnapshot.self.caught) {
+      pressedKeysRef.current.clear();
+      rendererRef.current?.setLocalMovement({ x: 0, y: 0 });
+    }
     const key = hudSemanticKey(nextSnapshot);
     const elapsed = performance.now() - hudPublishedAtRef.current;
     if (key !== hudSemanticKeyRef.current || elapsed >= HUD_UPDATE_INTERVAL_MS) {
@@ -132,7 +153,10 @@ export default function GameClient() {
       }
       rendererRef.current = renderer;
       if (snapshotRef.current) renderer.pushSnapshot(snapshotRef.current);
-      renderer.setLocalMovement(movementFromKeys(pressedKeysRef.current));
+      const current = snapshotRef.current;
+      renderer.setLocalMovement(localMovementLockedRef.current || current?.self.caught
+        ? { x: 0, y: 0 }
+        : movementFromKeys(pressedKeysRef.current));
     });
     return () => {
       disposed = true;
@@ -144,18 +168,21 @@ export default function GameClient() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       if (!snapshot) {
-        previousPhaseRef.current = undefined;
+        previousGuideStageRef.current = undefined;
         setCoachOpen(false);
         return;
       }
-      const role = snapshot.self.role;
-      const enteredHiding = previousPhaseRef.current !== "HIDING" && snapshot.phase === "HIDING";
-      if (enteredHiding && (role === "HIDER" || role === "SEEKER")) {
-        const seen = window.localStorage.getItem(`nunchisoom-guide-seen-${role}`) === "1";
-        if (!seen) setCoachOpen(true);
+      const stage = snapshot.phase === "FINAL" ? undefined : guideStageFor(snapshot);
+      if (!stage) {
+        previousGuideStageRef.current = undefined;
+        setCoachOpen(false);
+        return;
       }
-      if (snapshot.phase === "LOBBY" || snapshot.phase === "FINAL") setCoachOpen(false);
-      previousPhaseRef.current = snapshot.phase;
+      if (previousGuideStageRef.current !== stage) {
+        const seen = window.localStorage.getItem(guideStorageKey(stage)) === "1";
+        setCoachOpen(!seen);
+        previousGuideStageRef.current = stage;
+      }
     }, 0);
     return () => window.clearTimeout(timer);
   }, [snapshot]);
@@ -167,6 +194,15 @@ export default function GameClient() {
       const key = movementKey(event.key);
       if (!key) return;
       event.preventDefault();
+      if (localMovementLockedRef.current) {
+        setNotice({
+          id: createClientId(),
+          title: "위치 고정 중",
+          label: "오른쪽 행동 패널에서 ‘고정 해제’를 눌러야 다시 움직일 수 있어요.",
+        });
+        return;
+      }
+      if (snapshotRef.current?.self.caught) return;
       if (pressedKeys.has(key)) return;
       pressedKeys.add(key);
       sendMovementNow();
@@ -262,6 +298,9 @@ export default function GameClient() {
         if (roomRef.current === joinedRoom) {
           roomRef.current = undefined;
           snapshotRef.current = undefined;
+          localMovementLockedRef.current = false;
+          pendingLockRef.current = undefined;
+          pressedKeysRef.current.clear();
           clearHudSchedule();
           setStatus("closed");
           setRoom(undefined);
@@ -297,7 +336,10 @@ export default function GameClient() {
     const activeRoom = roomRef.current;
     roomRef.current = undefined;
     snapshotRef.current = undefined;
+    localMovementLockedRef.current = false;
+    pendingLockRef.current = undefined;
     rendererRef.current?.setLocalMovement({ x: 0, y: 0 });
+    pressedKeysRef.current.clear();
     clearHudSchedule();
     if (activeRoom) await activeRoom.leave(true);
     setRoom(undefined);
@@ -309,7 +351,19 @@ export default function GameClient() {
   }, [clearHudSchedule]);
 
   const send = useCallback((type: string, payload: unknown) => {
-    roomRef.current?.send(type, payload);
+    const activeRoom = roomRef.current;
+    if (!activeRoom) return;
+    if (type === "lock" && typeof payload === "boolean") {
+      pendingLockRef.current = { locked: payload, requestedAt: Date.now() };
+      // 잠금은 클릭한 프레임부터 막고, 해제는 서버 응답을 확인한 뒤 다시 이동을 허용한다.
+      if (payload) localMovementLockedRef.current = true;
+      pressedKeysRef.current.clear();
+      rendererRef.current?.setLocalMovement({ x: 0, y: 0 });
+      activeRoom.send(type, payload);
+      activeRoom.send("move", { seq: nextSequence(sequenceRef), x: 0, y: 0 });
+      return;
+    }
+    activeRoom.send(type, payload);
   }, []);
 
   const copyInvite = useCallback(async () => {
@@ -322,6 +376,7 @@ export default function GameClient() {
   }, [room]);
 
   const setTouchKey = useCallback((key: string, active: boolean) => {
+    if (active && (localMovementLockedRef.current || snapshotRef.current?.self.caught)) return;
     const changed = active
       ? !pressedKeysRef.current.has(key)
       : pressedKeysRef.current.has(key);
@@ -334,10 +389,8 @@ export default function GameClient() {
   const serverNow = clockNow + serverOffset;
   const finalChase = isFinalChase(snapshot, serverNow);
   const dismissCoach = () => {
-    const role = snapshot?.self.role;
-    if (role === "HIDER" || role === "SEEKER") {
-      window.localStorage.setItem(`nunchisoom-guide-seen-${role}`, "1");
-    }
+    const stage = snapshot ? guideStageFor(snapshot) : undefined;
+    if (stage) window.localStorage.setItem(guideStorageKey(stage), "1");
     setCoachOpen(false);
   };
 
@@ -355,12 +408,12 @@ export default function GameClient() {
           <div className="join-intro">
             <p className="eyebrow">소리가 없어도 단서는 선명하게</p>
             <h1>오늘 밤,<br /><em>잡화점의 눈치왕</em>은 누구?</h1>
-            <p>설치 없이 별명만 정하면 바로 시작합니다. 공개방은 무작위 친구와, 초대방은 링크를 받은 지인과 만나요.</p>
+            <p>설치 없이 별명만 정하면 바로 시작합니다. 빠른 매칭에서는 무작위 이용자를 만나고, 직접 만든 방에서는 친구와 난이도별 AI가 함께합니다.</p>
             <div className="join-quick-guide">
               <strong>처음이라면 이것만 기억하세요</strong>
               <ol>
-                <li>역할표에서 내가 숨는 팀인지 찾는 팀인지 확인합니다.</li>
-                <li>틈새정령은 사물처럼 멈추고, 관찰자는 숨기 전 기준 배치를 기억합니다.</li>
+                <li>역할표에서 내가 숨는 팀인지 이번 라운드 술래인지 확인합니다.</li>
+                <li>숨는 팀은 자리를 정한 뒤 위치를 고정하고, 술래는 기준 배치를 기억합니다.</li>
                 <li>문과 포탈은 연결된 다른 구역으로 바로 이동합니다.</li>
               </ol>
               <a href="/how-to-play">실제 게임 화면으로 차근차근 배우기</a>
@@ -389,40 +442,42 @@ export default function GameClient() {
                 </button>
               </div>
             ) : (
-              <div className="mode-grid" aria-label="게임 방식 선택">
-                <button type="button" disabled={status === "connecting"} onClick={() => void connect("public")}>
+              <div className="mode-grid unified-modes" aria-label="게임 방식 선택">
+                <button className="quick-match-card" type="button" disabled={status === "connecting"} onClick={() => void connect("public")}>
                   <span aria-hidden="true">✦</span><strong>빠른 매칭</strong><small>4~10명 공개방</small>
                 </button>
-                <button type="button" disabled={status === "connecting"} onClick={() => void connect("invite")}>
-                  <span aria-hidden="true">⌁</span><strong>친구방 만들기</strong><small>링크로 지인 초대</small>
-                </button>
-                <button type="button" disabled={status === "connecting"} onClick={() => void connect("practice")}>
-                  <span aria-hidden="true">◎</span><strong>AI 방 만들기</strong><small>부족한 자리는 AI가 참여</small>
-                </button>
+                <section className="create-room-card" aria-labelledby="create-room-title">
+                  <div className="create-room-heading">
+                    <span aria-hidden="true">◎</span>
+                    <div><strong id="create-room-title">친구·AI 방 만들기</strong><small>친구가 들어오면 AI가 한 명씩 자리를 비워요.</small></div>
+                  </div>
+                  <fieldset className="ai-difficulty-picker">
+                    <legend><strong>함께할 AI 난이도</strong><small>AI 술래와 숨는 팀 모두에 적용</small></legend>
+                    <div>
+                      {(["easy", "normal", "hard"] as const).map((difficulty) => (
+                        <button
+                          key={difficulty}
+                          type="button"
+                          className={aiDifficulty === difficulty ? "active" : ""}
+                          aria-pressed={aiDifficulty === difficulty}
+                          disabled={status === "connecting"}
+                          onClick={() => {
+                            setAiDifficulty(difficulty);
+                            window.localStorage.setItem("nunchisoom-ai-difficulty", difficulty);
+                          }}
+                        >
+                          {aiDifficultyLabel(difficulty)}
+                        </button>
+                      ))}
+                    </div>
+                    <p>{aiDifficultyDescription(aiDifficulty)}</p>
+                  </fieldset>
+                  <button className="create-room-button" type="button" disabled={status === "connecting"} onClick={() => void connect("practice")}>
+                    {aiDifficultyLabel(aiDifficulty)} AI와 방 만들기
+                  </button>
+                  <p className="create-room-note">혼자면 AI 3명이 참여하고, 친구가 합류해도 사람과 AI 합계 네 명을 유지합니다.</p>
+                </section>
               </div>
-            )}
-            {!inviteRoomId && (
-              <fieldset className="ai-difficulty-picker">
-                <legend><strong>AI 난이도</strong><small>AI 방을 만들 때 적용됩니다.</small></legend>
-                <div>
-                  {(["easy", "normal", "hard"] as const).map((difficulty) => (
-                    <button
-                      key={difficulty}
-                      type="button"
-                      className={aiDifficulty === difficulty ? "active" : ""}
-                      aria-pressed={aiDifficulty === difficulty}
-                      disabled={status === "connecting"}
-                      onClick={() => {
-                        setAiDifficulty(difficulty);
-                        window.localStorage.setItem("nunchisoom-ai-difficulty", difficulty);
-                      }}
-                    >
-                      {aiDifficultyLabel(difficulty)}
-                    </button>
-                  ))}
-                </div>
-                <p>{aiDifficultyDescription(aiDifficulty)}</p>
-              </fieldset>
             )}
             {!inviteRoomId && (
               <form
@@ -467,8 +522,8 @@ export default function GameClient() {
           <time>{formatRemaining(snapshot, serverNow)}</time>
         </div>
         <div className="room-tools">
-          <button type="button" onClick={() => setCoachOpen(true)} disabled={!snapshot || snapshot.self.role === "SPECTATOR"}>
-            역할 도움말
+          <button type="button" onClick={() => setCoachOpen(true)} disabled={!snapshot}>
+            단계별 도움말
           </button>
           <button type="button" onClick={() => void copyInvite()} title="초대 링크 복사">
             방 {shortRoomId(room.roomId)} <span>복사</span>
@@ -479,7 +534,7 @@ export default function GameClient() {
 
       <section className="play-grid">
         <aside className="players-panel" aria-label="참가자 목록">
-          <div className="panel-heading"><div><small>{modeLabel(snapshot?.mode, snapshot?.aiDifficulty)}</small><h2>함께 있는 친구</h2></div><strong>{snapshot?.players.length ?? 0}/{snapshot?.maxPlayers ?? 10}</strong></div>
+          <div className="panel-heading"><div><small>{modeLabel(snapshot?.mode, snapshot?.aiDifficulty)}</small><h2>참가자</h2></div><strong>{snapshot?.players.length ?? 0}/{snapshot?.maxPlayers ?? 10}</strong></div>
           <div className="player-list">
             {snapshot?.players.map((player) => (
               <article className={`player-row avatar-${player.avatar}`} key={player.id}>
@@ -517,27 +572,24 @@ export default function GameClient() {
             {finalChase && <div className="final-chase-ribbon"><span aria-hidden="true">!</span><strong>마지막 15초</strong><small>시간이 끝나기 전에 남은 틈새정령을 찾으세요</small></div>}
             {snapshot?.result && <ResultOverlay snapshot={snapshot} />}
             {snapshot?.self.caught && snapshot.phase === "SEEKING" && <div className="caught-ribbon">발견됐어요 · 팀 핑으로 계속 도울 수 있어요</div>}
-            {coachOpen && snapshot && (snapshot.phase === "HIDING" || snapshot.phase === "SEEKING") && (
-              <FirstPlayCoach snapshot={snapshot} onClose={dismissCoach} />
+            {coachOpen && snapshot && guideStageFor(snapshot) && (
+              <StageHelpCoach snapshot={snapshot} onClose={dismissCoach} />
             )}
           </div>
-          <div className="visual-feed" aria-live="polite">
+          <div className="visual-feed">
             <span className={`connection-dot ${status}`} aria-hidden="true" />
-            <p>{notice?.label ?? roleInstruction(snapshot)}</p>
-            {notice?.title && <strong>{notice.title}</strong>}
+            <div className="current-task"><small>지금 할 일</small><p>{roleInstruction(snapshot)}</p></div>
+            {notice && <div className={`event-alert ${notice.tone ?? "normal"}`} role="status" aria-live="polite"><small>{notice.title ?? "최근 알림"}</small><p>{notice.label}</p></div>}
           </div>
         </section>
 
         <aside className="action-panel" aria-label="행동 패널">
           <RoleCard snapshot={snapshot} />
-          <div className="focus-card">
-            <div><span>{snapshot?.self.role === "SEEKER" ? "집중력" : "은신 안정도"}</span><strong>{snapshot?.self.focus ?? 100}</strong></div>
-            <progress max={100} value={snapshot?.self.focus ?? 100}>{snapshot?.self.focus ?? 100}</progress>
-          </div>
+          <RoleStatusCard snapshot={snapshot} />
           <ActionButtons snapshot={snapshot} send={send} />
           <TeamPings role={snapshot?.self.role} send={send} />
-          <TouchPad setKey={setTouchKey} />
-          <p className="keyboard-help">이동: WASD / 방향키 · 사물을 클릭해 확인</p>
+          <TouchPad setKey={setTouchKey} disabled={Boolean(snapshot?.self.locked || snapshot?.self.caught)} />
+          <p className="keyboard-help">{controlInstruction(snapshot)}</p>
         </aside>
       </section>
     </main>
@@ -563,10 +615,34 @@ function RoleCard({ snapshot }: { snapshot?: GameSnapshot }) {
   return (
     <div className={`role-card role-${role.toLowerCase()}`}>
       <span aria-hidden="true">{role === "HIDER" ? "▣" : role === "SEEKER" ? "☾" : "⌛"}</span>
-      <div><small>내 역할 · 현재 목표</small><strong>{role === "HIDER" ? "틈새정령" : role === "SEEKER" ? "밤지기 관찰자" : "대기 중"}</strong></div>
+      <div><small>내 역할 · 현재 목표</small><strong>{role === "HIDER" ? "숨는 팀 · 틈새정령" : role === "SEEKER" ? "술래 · 밤지기 관찰자" : "역할 배정 대기"}</strong></div>
       <p>{roleInstruction(snapshot)}</p>
-      {role === "SEEKER" && <em>이동 우위 · 틈새정령보다 약 46% 빠름</em>}
-      {role === "HIDER" && <em>{snapshot?.self.locked ? "◆ 지금은 사물 고정 상태" : "이동하면 짧은 파문이 남아요"}</em>}
+      {role === "SEEKER" && <em>이동 우위 · 숨는 팀보다 약 46% 빠름</em>}
+      {role === "HIDER" && <em>{snapshot?.self.locked ? "◆ 위치 고정 중 · 이동키 작동 안 함" : "이동하면 짧은 파문이 남아요"}</em>}
+    </div>
+  );
+}
+
+function RoleStatusCard({ snapshot }: { snapshot?: GameSnapshot }) {
+  if (!snapshot || snapshot.self.role === "SPECTATOR") {
+    return <div className="state-card waiting"><span>현재 상태</span><strong>역할 배정 대기</strong><p>준비 완료 후 역할표에서 목표를 확인하세요.</p></div>;
+  }
+  if (snapshot.self.role === "HIDER") {
+    const caught = snapshot.self.caught;
+    const locked = snapshot.self.locked;
+    return (
+      <div className={`state-card hider-state ${caught ? "caught" : locked ? "locked" : "mobile"}`}>
+        <span>현재 은신 상태</span>
+        <strong>{caught ? "발견됨 · 팀 지원" : locked ? "위치 고정 · 이동 불가" : "이동 가능 · 파문 주의"}</strong>
+        <p>{caught ? "무음 팀 신호로 남은 동료를 도와주세요." : locked ? "다시 움직이려면 먼저 고정 해제를 누르세요." : "움직이는 동안 짧은 파문이 남습니다."}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="focus-card">
+      <div><span>확인 집중력</span><strong>{snapshot.self.focus}</strong></div>
+      <progress max={100} value={snapshot.self.focus}>{snapshot.self.focus}</progress>
+      <p>오답이면 집중력이 줄고 잠시 확인할 수 없습니다.</p>
     </div>
   );
 }
@@ -574,18 +650,20 @@ function RoleCard({ snapshot }: { snapshot?: GameSnapshot }) {
 function ActionButtons({ snapshot, send }: { snapshot?: GameSnapshot; send: (type: string, payload: unknown) => void }) {
   if (!snapshot || snapshot.self.role === "SPECTATOR") return <div className="action-empty">경기가 시작되면 역할 행동이 열려요.</div>;
   if (snapshot.phase === "COUNTDOWN") return <div className="action-empty">역할 목표를 확인하세요. 숨기·기준 맵 탐색이 시작되면 행동이 열립니다.</div>;
+  if (snapshot.phase === "RESULT" || snapshot.phase === "FINAL") return <div className="action-empty">라운드가 끝났습니다. 점수와 주요 장면을 확인하세요.</div>;
+  if (snapshot.self.caught) return <div className="action-empty">발견됐지만 끝이 아니에요. 아래 무음 팀 신호로 동료를 도와주세요.</div>;
   if (snapshot.self.role === "HIDER") {
     return (
       <div className="action-buttons">
         <div className="action-item">
-          <button type="button" onClick={() => send("lock", !snapshot.self.locked)}><span>◆</span><strong>{snapshot.self.locked ? "고정 풀기" : "사물 고정"}</strong><small>움직임을 완전히 멈춰요</small></button>
-          <HelpTooltip label="사물 고정" copy="움직임을 멈춰 파문을 숨깁니다. 이동키를 누르면 자동으로 풀리며, 미션 구역에서는 고정 상태를 2초 유지해야 합니다." />
+          <button type="button" aria-pressed={snapshot.self.locked} onClick={() => send("lock", !snapshot.self.locked)}><span>◆</span><strong>{snapshot.self.locked ? "고정 해제" : "위치 고정"}</strong><small>{snapshot.self.locked ? "해제해야 다시 움직일 수 있어요" : "이동키를 눌러도 움직이지 않아요"}</small></button>
+          <HelpTooltip label="위치 고정" copy="현재 위치에서 완전히 멈춰 움직임 파문을 숨깁니다. 고정 중에는 이동키가 작동하지 않으며, 다시 움직이려면 반드시 고정 해제를 누르세요. 미션 구역에서는 2초 동안 고정하면 됩니다." />
         </div>
         <div className="action-item">
-          <button type="button" disabled={!snapshot.self.swapAvailable} onClick={() => send("swap", true)}><span>⇄</span><strong>자리바꿈</strong><small>가까운 같은 사물과 1회 교체</small></button>
-          <HelpTooltip label="자리바꿈" copy="2.5칸 안의 같은 종류 사물과 위치를 단 한 번 바꿉니다. 관찰자가 가까이 왔을 때 탈출하거나 기준 기억을 흔들 때 사용하세요." />
+          <button type="button" disabled={!snapshot.self.swapAvailable} onClick={() => send("swap", true)}><span>⇄</span><strong>{snapshot.self.swapAvailable ? "무작위 자리바꿈" : "자리바꿈 사용 완료"}</strong><small>{snapshot.self.swapAvailable ? "맵 전체 같은 사물 중 한 곳 · 1회" : "다음 라운드에 다시 사용할 수 있어요"}</small></button>
+          <HelpTooltip label="무작위 자리바꿈" copy="거리와 관계없이 맵 전체의 같은 종류 사물 중 한 곳과 무작위로 자리를 바꿉니다. 라운드당 한 번만 사용할 수 있으니 발각 직전이나 기준 기억을 흔들 때 사용하세요." />
         </div>
-        {snapshot.mission && <div className="mission-card action-with-help"><span>시각 미션</span><strong>{snapshot.mission.label}</strong><progress max={1} value={snapshot.mission.progress}>{Math.round(snapshot.mission.progress * 100)}%</progress><HelpTooltip label="진열 미션" copy="표시된 구역 안에서 사물 고정을 2초 유지하면 25점을 받습니다. 생존보다 위험하다고 판단되면 포기해도 됩니다." /></div>}
+        {snapshot.mission && <div className="mission-card action-with-help"><span>시각 미션</span><strong>{snapshot.mission.label}</strong><progress max={1} value={snapshot.mission.progress}>{Math.round(snapshot.mission.progress * 100)}%</progress><HelpTooltip label="진열 미션" copy="표시된 구역 안에서 위치 고정을 2초 유지하면 25점을 받습니다. 생존보다 위험하다고 판단되면 포기해도 됩니다." /></div>}
       </div>
     );
   }
@@ -636,15 +714,17 @@ function HelpTooltip({ label, copy }: { label: string; copy: string }) {
 
 function RoleRevealOverlay({ snapshot, serverNow }: { snapshot: GameSnapshot; serverNow: number }) {
   const seeker = snapshot.self.role === "SEEKER";
+  const teamName = seeker ? "술래" : "숨는 팀";
   const roleName = seeker ? "밤지기 관찰자" : "틈새정령";
   const steps = seeker
     ? ["숨는 장면 대신 기준 사물 배치를 기억하세요.", "드래그·휠과 이동키로 포탈 도착점까지 확인하세요.", "수색이 열리면 가까운 수상한 사물을 클릭하세요."]
-    : ["주변과 자연스럽게 어울리는 자리를 찾으세요.", "자리를 정하면 ‘사물 고정’으로 파문을 숨기세요.", "수색 중에는 자리바꿈과 포탈을 탈출에 활용하세요."];
+    : ["주변과 자연스럽게 어울리는 자리를 찾으세요.", "자리를 정하면 ‘위치 고정’을 눌러 완전히 멈추세요.", "무작위 자리바꿈과 포탈은 발각 직전 탈출에 활용하세요."];
   return (
-    <div className={`game-overlay role-reveal-overlay ${seeker ? "reveal-seeker" : "reveal-hider"}`} role="dialog" aria-label={`${roleName} 역할 안내`}>
+    <div className={`game-overlay role-reveal-overlay ${seeker ? "reveal-seeker" : "reveal-hider"}`} role="dialog" aria-label={`${teamName} ${roleName} 역할 안내`}>
       <span className="role-reveal-symbol" aria-hidden="true">{seeker ? "☾" : "▣"}</span>
       <p className="role-reveal-kicker">{snapshot.round}라운드 역할 확정</p>
-      <strong>당신은 <em>{roleName}</em>입니다</strong>
+      <strong>당신은 이번 라운드 <em>{teamName}</em>입니다</strong>
+      <p className="role-reveal-alias">눈치숨 역할 이름 · {roleName}</p>
       <p className="role-reveal-goal">{seeker ? "제한시간 안에 모든 틈새정령을 찾아내세요." : "평범한 사물처럼 숨어 수색 종료까지 살아남으세요."}</p>
       <ol>{steps.map((step) => <li key={step}>{step}</li>)}</ol>
       <div className="role-reveal-footer"><time>{formatRemaining(snapshot, serverNow)}</time><span>{formatDurationLabel(snapshot.roundDurationMs)} 라운드 · 곧 {seeker ? "기준 맵 탐색" : "숨기"} 시작</span></div>
@@ -652,28 +732,48 @@ function RoleRevealOverlay({ snapshot, serverNow }: { snapshot: GameSnapshot; se
   );
 }
 
-function FirstPlayCoach({ snapshot, onClose }: { snapshot: GameSnapshot; onClose: () => void }) {
-  const seeker = snapshot.self.role === "SEEKER";
-  const preview = seeker && snapshot.phase === "HIDING";
-  const title = preview ? "먼저 기준 맵을 기억하세요" : seeker ? "이제 차이를 찾아보세요" : snapshot.phase === "HIDING" ? "지금은 숨을 자리부터 찾으세요" : "움직일 때를 신중히 고르세요";
-  const steps = preview
-    ? ["마우스로 맵을 끌고 휠로 확대합니다.", "WASD로 포탈을 통과해 연결 구역을 봅니다.", "중복되거나 어색한 사물 수를 기억합니다."]
-    : seeker
-      ? ["기억한 배치와 다른 사물을 찾습니다.", "2.6칸 안까지 다가간 뒤 사물을 클릭합니다.", "막히면 렌즈로 최근 움직임 구역을 좁힙니다."]
-      : snapshot.phase === "HIDING"
-        ? ["진열된 사물 무리 옆으로 이동합니다.", "자연스러운 방향을 맞춘 뒤 사물 고정을 누릅니다.", "여유가 있으면 표시된 미션 구역을 노립니다."]
-        : ["고정 상태를 유지해 움직임 파문을 감춥니다.", "발각 직전에는 자리바꿈이나 포탈로 빠져나갑니다.", "발견된 뒤에도 팀 신호로 동료를 돕습니다."];
+function StageHelpCoach({ snapshot, onClose }: { snapshot: GameSnapshot; onClose: () => void }) {
+  const stage = guideStageFor(snapshot) ?? "LOBBY";
+  const guide = ({
+    LOBBY: {
+      eyebrow: "처음 플레이 안내",
+      title: "한 라운드는 이렇게 진행돼요",
+      steps: ["준비 완료를 누르고 역할표를 기다립니다.", "숨는 팀은 자리를 잡고, 술래는 숨는 장면 없이 기준 맵을 기억합니다.", "수색이 끝나면 점수를 확인하고 다음 라운드에서 역할을 다시 나눕니다."],
+    },
+    HIDER_HIDE: {
+      eyebrow: "숨는 팀 · 1단계",
+      title: "먼저 자연스러운 자리를 찾으세요",
+      steps: ["진열된 같은 종류 사물 무리 옆으로 이동합니다.", "자리를 정하면 위치 고정을 눌러 완전히 멈춥니다.", "여유가 있으면 표시된 미션 구역에서 2초간 고정합니다."],
+    },
+    HIDER_SURVIVE: {
+      eyebrow: "숨는 팀 · 2단계",
+      title: "고정을 유지하고 탈출 시점을 고르세요",
+      steps: ["고정 중에는 이동키가 작동하지 않으므로 움직이기 전에 고정을 해제합니다.", "발각 직전에는 맵 전체 같은 사물로 무작위 자리바꿈을 사용합니다.", "발견된 뒤에도 무음 팀 신호로 남은 동료를 도울 수 있습니다."],
+    },
+    SEEKER_PREVIEW: {
+      eyebrow: "술래 · 1단계",
+      title: "먼저 기준 맵을 기억하세요",
+      steps: ["숨는 이용자는 보이지 않으니 기본 사물 수와 빈 공간을 확인합니다.", "마우스로 맵을 끌고 휠로 확대합니다.", "WASD로 포탈을 통과해 연결 구역과 도착점을 확인합니다."],
+    },
+    SEEKER_SEARCH: {
+      eyebrow: "술래 · 2단계",
+      title: "이제 기준 배치와 다른 점을 찾으세요",
+      steps: ["기억한 배치와 다른 사물을 찾습니다.", "2.6칸 안까지 다가간 뒤 수상한 사물을 클릭합니다.", "막히면 관찰 렌즈로 최근 움직임 구역을 좁힙니다."],
+    },
+  } satisfies Record<GuideStage, { eyebrow: string; title: string; steps: string[] }>)[stage];
+  const tone = stage.startsWith("SEEKER") ? "coach-seeker" : stage.startsWith("HIDER") ? "coach-hider" : "coach-lobby";
   return (
-    <aside className={`coach-card ${seeker ? "coach-seeker" : "coach-hider"}`} aria-label="첫 플레이 단계 안내">
-      <div><span>{seeker ? "관찰자 안내" : "틈새정령 안내"}</span><button type="button" onClick={onClose} aria-label="역할 안내 닫기">×</button></div>
-      <strong>{title}</strong>
-      <ol>{steps.map((step) => <li key={step}>{step}</li>)}</ol>
+    <aside className={`coach-card ${tone}`} aria-label="단계별 게임 도움말">
+      <div><span>{guide.eyebrow}</span><button type="button" onClick={onClose} aria-label="게임 도움말 닫기">×</button></div>
+      <strong>{guide.title}</strong>
+      {stage === "LOBBY" && <div className="coach-role-summary"><b>숨는 팀</b><span>위치 고정 후 생존</span><b>술래</b><span>기준 배치와 차이 찾기</span></div>}
+      <ol>{guide.steps.map((step) => <li key={step}>{step}</li>)}</ol>
       <button type="button" className="coach-done" onClick={onClose}>이해했어요</button>
     </aside>
   );
 }
 
-function TouchPad({ setKey }: { setKey: (key: string, active: boolean) => void }) {
+function TouchPad({ setKey, disabled }: { setKey: (key: string, active: boolean) => void; disabled: boolean }) {
   const bind = (key: string) => ({
     onPointerDown: () => setKey(key, true),
     onPointerUp: () => setKey(key, false),
@@ -681,11 +781,11 @@ function TouchPad({ setKey }: { setKey: (key: string, active: boolean) => void }
     onPointerCancel: () => setKey(key, false),
   });
   return (
-    <div className="touch-pad" aria-label="화면 이동키">
-      <button type="button" aria-label="위로 이동" {...bind("up")}>▲</button>
-      <button type="button" aria-label="왼쪽으로 이동" {...bind("left")}>◀</button>
-      <button type="button" aria-label="아래로 이동" {...bind("down")}>▼</button>
-      <button type="button" aria-label="오른쪽으로 이동" {...bind("right")}>▶</button>
+    <div className="touch-pad" aria-label={disabled ? "현재 이동할 수 없습니다" : "화면 이동키"}>
+      <button type="button" disabled={disabled} aria-label="위로 이동" {...bind("up")}>▲</button>
+      <button type="button" disabled={disabled} aria-label="왼쪽으로 이동" {...bind("left")}>◀</button>
+      <button type="button" disabled={disabled} aria-label="아래로 이동" {...bind("down")}>▼</button>
+      <button type="button" disabled={disabled} aria-label="오른쪽으로 이동" {...bind("right")}>▶</button>
     </div>
   );
 }
@@ -777,28 +877,52 @@ function phaseLabel(phase?: GamePhase): string {
 function roleInstruction(snapshot?: GameSnapshot): string {
   if (!snapshot || snapshot.self.role === "SPECTATOR") return "준비를 마친 뒤 역할표를 기다리세요.";
   if (snapshot.phase === "COUNTDOWN") return snapshot.self.role === "SEEKER"
-    ? "관찰자입니다. 숨는 장면은 보이지 않으니 기준 배치부터 기억하세요."
-    : "틈새정령입니다. 자연스러운 자리를 찾고 사물처럼 고정하세요.";
+    ? "이번 라운드 술래입니다. 숨는 장면은 보이지 않으니 기준 배치부터 기억하세요."
+    : "이번 라운드 숨는 팀입니다. 자연스러운 자리를 찾고 위치를 고정하세요.";
   if (snapshot.self.caught) return "발견됐지만 끝이 아니에요. 무음 핑으로 팀을 도우세요.";
-  if (snapshot.self.role === "HIDER") return snapshot.phase === "HIDING" ? "사물 사이에 자리를 잡고 고정하세요." : "평범한 척 미션을 노리되 움직임 파문을 조심하세요.";
+  if (snapshot.self.role === "HIDER") return snapshot.phase === "HIDING" ? "사물 무리 사이에 자리를 잡고 위치 고정을 누르세요." : snapshot.self.locked ? "위치 고정을 유지하고, 움직이려면 먼저 고정을 해제하세요." : "이동하면 파문이 남습니다. 자리를 정했으면 다시 위치를 고정하세요.";
   return snapshot.phase === "HIDING"
     ? "숨는 이용자는 보이지 않습니다. 기준 사물과 포탈을 직접 돌며 기억하세요."
     : "기억한 기준 배치와 비교하고, 가까이 다가가 수상한 사물을 클릭하세요.";
+}
+
+function controlInstruction(snapshot?: GameSnapshot): string {
+  if (!snapshot || snapshot.self.role === "SPECTATOR") return "이동: WASD / 방향키 · 역할 배정 뒤 전용 행동이 열립니다.";
+  if (snapshot.self.caught) return "발견된 뒤에는 이동할 수 없지만 무음 팀 신호를 보낼 수 있습니다.";
+  if (snapshot.self.role === "HIDER") return snapshot.self.locked
+    ? "위치 고정 중 · 다시 움직이려면 먼저 고정 해제를 누르세요."
+    : "이동: WASD / 방향키 · 자리를 정한 뒤 위치 고정을 누르세요.";
+  return snapshot.phase === "HIDING"
+    ? "기준 맵 탐색: WASD / 방향키 · 마우스 드래그 · 휠 확대/축소"
+    : "이동: WASD / 방향키 · 가까운 수상한 사물을 클릭해 확인";
+}
+
+function guideStageFor(snapshot: GameSnapshot): GuideStage | undefined {
+  if (snapshot.phase === "LOBBY" || snapshot.phase === "FINAL") return "LOBBY";
+  if (snapshot.self.role === "HIDER" && snapshot.phase === "HIDING") return "HIDER_HIDE";
+  if (snapshot.self.role === "HIDER" && snapshot.phase === "SEEKING") return "HIDER_SURVIVE";
+  if (snapshot.self.role === "SEEKER" && snapshot.phase === "HIDING") return "SEEKER_PREVIEW";
+  if (snapshot.self.role === "SEEKER" && snapshot.phase === "SEEKING") return "SEEKER_SEARCH";
+  return undefined;
+}
+
+function guideStorageKey(stage: GuideStage): string {
+  return `nunchisoom-guide-seen-v2-${stage}`;
 }
 
 function modeLabel(mode?: RoomMode, difficulty?: AiDifficulty): string {
   return mode === "public"
     ? "빠른 매칭"
     : mode === "practice"
-      ? `AI 방 · ${aiDifficultyLabel(difficulty ?? "normal")}`
+      ? `친구·AI 방 · ${aiDifficultyLabel(difficulty ?? "normal")}`
       : "친구 초대방";
 }
 
 function aiDifficultyDescription(difficulty: AiDifficulty): string {
   return ({
-    easy: "반응이 느리고 단서를 자주 놓쳐 처음 배우기 편합니다.",
-    normal: "시야·기억·실수를 균형 있게 조정한 기본 난이도입니다.",
-    hard: "움직임을 빨리 포착하고 오래 기억하지만 벽 너머 정답은 알지 못합니다.",
+    easy: "AI가 천천히 찾고 늦게 도망갑니다. 첫 판에서 역할과 맵을 익힐 때 추천합니다.",
+    normal: "찾기·숨기 판단과 실수를 균형 있게 조정한 기본 난이도입니다.",
+    hard: "AI가 단서를 오래 기억하고 적극적으로 추적·도주합니다. 벽 너머 정답은 알지 못합니다.",
   } satisfies Record<AiDifficulty, string>)[difficulty];
 }
 

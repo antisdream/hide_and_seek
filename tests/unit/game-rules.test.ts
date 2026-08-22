@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   DEFAULT_RULES,
   normalizeMove,
+  pickGlobalSwapTarget,
   roundTimingFor,
   seekerCountFor,
   selectSeekers,
@@ -81,4 +82,15 @@ test("4인은 180초이며 한 명이 늘 때마다 수색 시간만 15초 늘�
   assert.equal(roundTimingFor(6).seekingMs, 155_000);
   assert.equal(roundTimingFor(10).totalMs, 270_000);
   assert.equal(roundTimingFor(20).playerCount, 10);
+});
+
+test("자리바꿈은 거리와 관계없이 맵 전체 같은 종류에서 한 곳을 고른다", () => {
+  const props = [
+    { id: "near", kind: "tape" as const, x: 1, y: 1, rotation: 0 },
+    { id: "other-kind", kind: "box" as const, x: 3, y: 3, rotation: 0 },
+    { id: "far", kind: "tape" as const, x: 30, y: 20, rotation: 90 },
+  ];
+  assert.equal(pickGlobalSwapTarget(props, "tape", () => 0)?.id, "near");
+  assert.equal(pickGlobalSwapTarget(props, "tape", () => 0.999)?.id, "far");
+  assert.equal(pickGlobalSwapTarget(props, "ribbon", () => 0.5), undefined);
 });

@@ -3,10 +3,18 @@ import { Room, ServerError, type AuthContext, type Client } from "@colyseus/core
 import { z } from "zod";
 import { isAllowedRequestOrigin, SAME_HOST_ORIGIN } from "./origin-policy";
 import { aiProfileFor, isAiDifficulty } from "../shared/ai-rules";
-import { distance, hasLineOfSight, isBlocked } from "../shared/geometry";
+import {
+  distance,
+  hasLineOfSight,
+  isBlocked,
+  MAX_MOVEMENT_DELTA_MS,
+  moveWithCollisions,
+  PLAYER_COLLISION_RADIUS,
+} from "../shared/geometry";
 import {
   DEFAULT_RULES,
   normalizeMove,
+  pickGlobalSwapTarget,
   roundTimingFor,
   selectSeekers,
   survivalScoreFor,
@@ -98,6 +106,7 @@ interface InternalPlayer extends Point {
   lastPingAt: number;
   lastMovedAt: number;
   portalReadyAt: number;
+  teleportRevision: number;
   lastSeq: number;
   inputX: number;
   inputY: number;
@@ -238,6 +247,7 @@ export class NunchisoomRoom extends Room {
       lastPingAt: 0,
       lastMovedAt: 0,
       portalReadyAt: 0,
+      teleportRevision: 0,
       lastSeq: -1,
       inputX: 0,
       inputY: 0,
@@ -398,7 +408,11 @@ export class NunchisoomRoom extends Room {
       | seedBytes[3]
     ) >>> 0;
     this.generatedMap = createMapForRound(seed, this.round);
-    this.staticProps = this.generatedMap.staticProps.map((prop) => ({ ...prop, id: opaqueId("object") }));
+    this.staticProps = this.generatedMap.staticProps.map((prop) => ({
+      ...prop,
+      id: opaqueId("object"),
+      teleportRevision: 0,
+    }));
     this.baselineProps = this.staticProps.map((prop) => ({ ...prop }));
     this.result = undefined;
 
@@ -436,6 +450,7 @@ export class NunchisoomRoom extends Room {
       player.inputY = 0;
       player.lastMovedAt = 0;
       player.portalReadyAt = 0;
+      player.teleportRevision = 0;
       player.botTarget = undefined;
       player.botTargetEntityId = undefined;
       player.botMemoryExpiresAt = 0;
@@ -563,12 +578,16 @@ export class NunchisoomRoom extends Room {
     const direction = normalizeMove(player.inputX, player.inputY);
     if (direction.x === 0 && direction.y === 0) return;
     const speed = this.movementSpeedFor(player);
-    const step = speed * (deltaTime / 1_000);
-    const nextX = { x: player.x + direction.x * step, y: player.y };
-    const nextY = { x: player.x, y: player.y + direction.y * step };
     const before = { x: player.x, y: player.y };
-    if (!isBlocked(nextX, 0.36, this.generatedMap.layout)) player.x = nextX.x;
-    if (!isBlocked(nextY, 0.36, this.generatedMap.layout)) player.y = nextY.y;
+    const next = moveWithCollisions(
+      player,
+      direction,
+      speed,
+      Math.min(MAX_MOVEMENT_DELTA_MS, deltaTime),
+      this.generatedMap.layout,
+    );
+    player.x = next.x;
+    player.y = next.y;
     if (distance(before, player) < 0.001) return;
 
     player.rotation = Math.round((Math.atan2(direction.y, direction.x) * 180) / Math.PI);
@@ -582,9 +601,10 @@ export class NunchisoomRoom extends Room {
   private applyPortal(player: InternalPlayer, now: number): void {
     if (now < player.portalReadyAt) return;
     const transfer = findPortalTransfer(player, this.generatedMap.layout);
-    if (!transfer || isBlocked(transfer, 0.36, this.generatedMap.layout)) return;
+    if (!transfer || isBlocked(transfer, PLAYER_COLLISION_RADIUS, this.generatedMap.layout)) return;
     player.x = transfer.x;
     player.y = transfer.y;
+    player.teleportRevision += 1;
     player.portalReadyAt = now + 900;
     player.lastMovedAt = now;
     const effect = {
@@ -660,7 +680,7 @@ export class NunchisoomRoom extends Room {
         .filter(({ player, gap }) => gap <= profile.hiderDangerRange && hasLineOfSight(bot, player, this.generatedMap.layout))
         .sort((a, b) => a.gap - b.gap)[0];
       if (threat && Math.random() <= profile.hiderEscapeChance) {
-        if (!bot.swapUsed && threat.gap <= this.rules.swapDistance && Math.random() < profile.hiderEscapeChance * 0.45) {
+        if (!bot.swapUsed && threat.gap <= profile.hiderSwapThreatRange && Math.random() < profile.hiderEscapeChance * 0.45) {
           this.performSwap(bot);
         }
         bot.locked = false;
@@ -812,11 +832,16 @@ export class NunchisoomRoom extends Room {
   private handleMove(client: Client, message: MoveMessage): void {
     const player = this.playerFor(client);
     if (!player || message.seq <= player.lastSeq) return;
-    const normalized = normalizeMove(message.x, message.y);
     player.lastSeq = message.seq;
+    // 위치 고정은 명시적인 고정 해제만 허용하며, 이동 heartbeat가 상태를 풀지 못하게 한다.
+    if (player.locked) {
+      player.inputX = 0;
+      player.inputY = 0;
+      return;
+    }
+    const normalized = normalizeMove(message.x, message.y);
     player.inputX = normalized.x;
     player.inputY = normalized.y;
-    if (normalized.x !== 0 || normalized.y !== 0) player.locked = false;
   }
 
   private handleLock(client: Client, locked: boolean): void {
@@ -835,25 +860,25 @@ export class NunchisoomRoom extends Room {
     if (!player || player.role !== "HIDER" || player.caught || player.swapUsed) return;
     if (this.phase !== "HIDING" && this.phase !== "SEEKING") return;
     if (this.performSwap(player)) return;
-    this.sendError(client, "자리바꿈 실패", "가까이에 같은 종류의 사물이 없습니다.");
+    this.sendError(client, "자리바꿈 실패", "맵에 교체 가능한 같은 종류의 사물이 없습니다.");
   }
 
   private performSwap(player: InternalPlayer): boolean {
-    const target = this.staticProps
-      .filter((prop) => prop.kind === player.propKind)
-      .map((prop) => ({ prop, gap: distance(player, prop) }))
-      .filter(({ gap }) => gap <= this.rules.swapDistance)
-      .sort((a, b) => a.gap - b.gap)[0]?.prop;
+    const target = pickGlobalSwapTarget(this.staticProps, player.propKind);
     if (!target) return false;
-    const previous = { x: player.x, y: player.y, rotation: player.rotation };
+    const previous = { x: player.x, y: player.y, rotation: player.rotation, entityId: player.entityId };
     player.x = target.x;
     player.y = target.y;
     player.rotation = target.rotation;
+    // 같은 종류는 외형이 같으므로 ID도 위치에 남겨 술래 스냅숏의 전후 차이만으로 정답을 좁히지 못하게 한다.
+    player.entityId = target.id;
     target.x = previous.x;
     target.y = previous.y;
     target.rotation = previous.rotation;
+    target.id = previous.entityId;
+    player.teleportRevision += 1;
+    target.teleportRevision = (target.teleportRevision ?? 0) + 1;
     player.swapUsed = true;
-    player.lastMovedAt = Date.now();
     this.addReplay("swap", `${player.displayName} 님이 사물과 자리를 바꿨습니다.`);
     const swapEffect = {
       type: "swap" as const,
@@ -861,8 +886,14 @@ export class NunchisoomRoom extends Room {
       y: player.y,
       label: "종이조각 사이로 두 사물이 바뀌었습니다.",
     };
-    if (this.phase === "HIDING") this.broadcastEffect(swapEffect, "HIDER");
-    else this.broadcastEffect(swapEffect);
+    // 관찰자에게 목적지 좌표가 담긴 효과를 보내면 전역 자리바꿈의 은신 의미가 사라진다.
+    this.broadcastEffect(swapEffect, "HIDER");
+    if (this.phase === "SEEKING") {
+      this.broadcastEffect({
+        type: "swap",
+        label: "어딘가에서 같은 사물 둘이 뒤바뀌었습니다.",
+      }, "SEEKER");
+    }
     return true;
   }
 
@@ -1014,6 +1045,8 @@ export class NunchisoomRoom extends Room {
       controlled: false,
       teammate: false,
       caught: false,
+      // 술래에게 원본 revision을 주면 자리바꿈 대상 둘만 추릴 수 있으므로 동일한 정적 값으로 비식별화한다.
+      teleportRevision: viewer.role === "SEEKER" ? 0 : prop.teleportRevision ?? 0,
     }));
     for (const player of roleReveal ? [] : this.players.values()) {
       if (player.role === "HIDER" && !player.caught && !seekerPreview) {
@@ -1028,6 +1061,7 @@ export class NunchisoomRoom extends Room {
           controlled: player.id === viewer.id,
           teammate: viewer.role === "HIDER" && player.role === "HIDER" && player.id !== viewer.id,
           caught: false,
+          teleportRevision: viewer.role === "SEEKER" ? 0 : player.teleportRevision,
         });
       }
       if (player.role === "SEEKER") {
@@ -1041,6 +1075,7 @@ export class NunchisoomRoom extends Room {
           controlled: player.id === viewer.id,
           teammate: viewer.role === "SEEKER" && player.id !== viewer.id,
           caught: false,
+          teleportRevision: player.teleportRevision,
           displayName: player.displayName,
           avatar: player.avatar,
         });
@@ -1198,6 +1233,7 @@ export class NunchisoomRoom extends Room {
         lastPingAt: 0,
         lastMovedAt: 0,
         portalReadyAt: 0,
+        teleportRevision: 0,
         lastSeq: -1,
         inputX: 0,
         inputY: 0,

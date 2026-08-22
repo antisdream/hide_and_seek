@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { distance, hasLineOfSight, isBlocked } from "../../shared/geometry";
+import { distance, hasLineOfSight, isBlocked, moveWithCollisions } from "../../shared/geometry";
 import {
   createMapForRound,
   createNightStationeryMap,
@@ -62,4 +62,21 @@ test("선반을 가로지르는 확인은 시야 판정에서 차단한다", () 
   const generated = createNightStationeryMap(7);
   assert.equal(hasLineOfSight({ x: 4, y: 3.5 }, { x: 4, y: 5.5 }, generated.layout), false);
   assert.equal(hasLineOfSight({ x: 1, y: 1 }, { x: 2, y: 2 }, generated.layout), true);
+});
+
+test("대각선으로 선반 모서리를 만나도 벽 안으로 들어갔다 튕겨 나오지 않는다", () => {
+  const map = {
+    id: "corner-test",
+    name: "모서리 검증",
+    theme: "stationery" as const,
+    version: "1",
+    width: 8,
+    height: 8,
+    obstacles: [{ id: "shelf", x: 2, y: 2, width: 3, height: 2 }],
+    zones: [],
+    portals: [],
+  };
+  const moved = moveWithCollisions({ x: 1.45, y: 1.45 }, { x: 1, y: 1 }, 9.5, 50, map);
+  assert.equal(isBlocked(moved, 0.36, map), false);
+  assert.ok(moved.x > 1.45 || moved.y > 1.45);
 });
