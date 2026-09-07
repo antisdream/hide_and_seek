@@ -40,6 +40,6 @@ yarn-error.log*
 /outputs/
 /work/
 
-# 눈치숨 로컬 실행 데이터와 타입스크립트 증분 캐시
+# 눈숨 로컬 실행 데이터와 타입스크립트 증분 캐시
 /data/
 *.tsbuildinfo

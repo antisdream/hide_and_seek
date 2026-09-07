@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "눈치숨 | 친구와 한 판, 별명 하나면 시작",
+  title: "눈숨 | 친구와 한 판, 별명 하나면 시작",
   description: "설치·회원가입 없이 모이는 사물 숨바꼭질. 혼자라면 AI 3명과, 친구와는 초대 링크로 함께하세요. 기본 무음으로 즐기는 무료 웹 파티게임입니다.",
 };
 
@@ -18,7 +18,7 @@ export default function Home() {
     <main className="landing-shell night-landing">
       <a className="skip-link" href="#start">시작 방법으로 건너뛰기</a>
       <nav className="topbar" aria-label="주요 메뉴">
-        <a className="brand" href="#top" aria-label="눈치숨 홈"><span className="brand-mark" aria-hidden="true">눈</span><span>눈치숨</span></a>
+        <a className="brand" href="#top" aria-label="눈숨 홈"><span className="brand-mark" aria-hidden="true">눈</span><span>눈숨</span></a>
         <div className="nav-actions"><a className="text-button" href="#play-scene">어떤 게임인가요?</a><a className="text-button" href="/how-to-play">게임 방법</a><a className="primary-button small-button" href="/game">플레이하기</a></div>
       </nav>
 
@@ -31,7 +31,7 @@ export default function Home() {
           <p className="entry-assurance">무료 · 설치·가입 없음 · 혼자면 AI 3명과</p>
           <ul className="game-facts" aria-label="플레이 조건"><li><strong>4~10명</strong><span>사람과 AI 함께</span></li><li><strong>3라운드</strong><span>4인 기준 약 9분</span></li><li><strong>마이크 없이</strong><span>화면 단서와 팀 신호</span></li></ul>
         </div>
-        <figure className="night-hero-art"><img src="/og.png" alt="한밤의 잡화점에서 밤지기 모루와 연필·노트·테이프 정령이 숨바꼭질하는 눈치숨 일러스트" width={1731} height={909} fetchPriority="high" /><figcaption><span className="art-label">눈치숨의 세계</span><span>가장 평범한 것이, 가장 수상한 밤.</span></figcaption></figure>
+        <figure className="night-hero-art"><img src="/og.png" alt="한밤의 잡화점에서 밤지기 모루와 연필·노트·테이프 정령이 숨바꼭질하는 눈숨 일러스트" width={1731} height={909} fetchPriority="high" /><figcaption><span className="art-label">눈숨의 세계</span><span>가장 평범한 것이, 가장 수상한 밤.</span></figcaption></figure>
       </section>
 
       <section className="play-reasons" aria-label="이럴 때 함께해요">
@@ -51,7 +51,7 @@ export default function Home() {
       <section className="play-faq" aria-labelledby="faq-title"><div className="section-heading"><p className="eyebrow">시작 전에 궁금할 것들</p><h2 id="faq-title">처음이어도 괜찮아요.</h2></div><div>{questions.map(([question, answer]) => <details key={question}><summary>{question}<span aria-hidden="true">+</span></summary><p>{answer}</p></details>)}</div></section>
 
       <section className="night-final-cta"><p className="eyebrow">오늘의 눈치왕은 누구일까요?</p><h2>친구가 오기 전에,<br />먼저 감을 잡아볼까요.</h2><a className="primary-button" href="/game?play=solo">AI와 먼저 한 판 <span aria-hidden="true">→</span></a><p className="entry-assurance">별명만 정하면 AI 3명과 시작합니다.</p><a className="night-text-link" href="/game?play=friends">이미 모였다면 친구방 만들기</a></section>
-      <footer className="landing-footer"><a className="brand" href="#top"><span className="brand-mark" aria-hidden="true">눈</span><span>눈치숨</span></a><p>소리 없이도 함께하는 사물 숨바꼭질</p><div><a href="/how-to-play">게임 방법</a><a href="https://github.com/antisdream/hide_and_seek">GitHub</a></div></footer>
+      <footer className="landing-footer"><a className="brand" href="#top"><span className="brand-mark" aria-hidden="true">눈</span><span>눈숨</span></a><p>소리 없이도 함께하는 사물 숨바꼭질</p><div><a href="/how-to-play">게임 방법</a><a href="https://github.com/antisdream/hide_and_seek">GitHub</a></div></footer>
     </main>
   );
 }

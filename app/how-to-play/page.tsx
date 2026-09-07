@@ -3,7 +3,7 @@ import Image from "next/image";
 import Link from "next/link";
 
 export const metadata: Metadata = {
-  title: "게임 방법 | 눈치숨",
+  title: "게임 방법 | 눈숨",
   description: "실제 게임 화면으로 배우는 숨는 팀 · 틈새정령과 술래 · 밤지기의 역할, 라운드 흐름과 조작 방법",
 };
 
@@ -112,7 +112,7 @@ export default function HowToPlayPage() {
   return (
     <main className="guide-page">
       <nav className="topbar">
-        <Link className="brand" href="/" prefetch={false} aria-label="눈치숨 홈"><span className="brand-mark" aria-hidden="true">눈</span><span>눈치숨</span></Link>
+        <Link className="brand" href="/" prefetch={false} aria-label="눈숨 홈"><span className="brand-mark" aria-hidden="true">눈</span><span>눈숨</span></Link>
         <a className="primary-button small-button" href="/game">게임 시작</a>
       </nav>
 

@@ -372,7 +372,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       });
       joinedRoom.onDrop((code, reason) => {
         if (roomRef.current !== joinedRoom) return;
-        console.warn("[눈치숨 연결 끊김]", JSON.stringify({ code, reason, phase: snapshotRef.current?.phase }));
+        console.warn("[눈숨 연결 끊김]", JSON.stringify({ code, reason, phase: snapshotRef.current?.phase }));
         pressedKeysRef.current.clear();
         lastSentMovementRef.current = { x: 0, y: 0 };
         rendererRef.current?.setLocalMovement({ x: 0, y: 0 });
@@ -391,7 +391,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       joinedRoom.onLeave((code, reason) => {
         if (roomRef.current === joinedRoom) {
           const current = snapshotRef.current;
-          console.warn("[눈치숨 연결 종료]", JSON.stringify({
+          console.warn("[눈숨 연결 종료]", JSON.stringify({
             code, reason, phase: current?.phase,
             lastAcceptedSeq: current?.self.lastAcceptedSeq,
             teleportRevision: current?.entities.find((entity) => entity.controlled)?.teleportRevision,
@@ -534,7 +534,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
     const current = snapshotRef.current;
     if (!current || current.phase !== "FINAL") return;
     const self = current.players.find((player) => player.id === current.self.playerId);
-    const text = `눈치숨 ${current.totalRounds}라운드 완주! ${self?.displayName ?? "나"} ${self?.score ?? 0}점 · 다음 판 함께해요\n${createInviteUrl(window.location.href, current.roomId)}`;
+    const text = `눈숨 ${current.totalRounds}라운드 완주! ${self?.displayName ?? "나"} ${self?.score ?? 0}점 · 다음 판 함께해요\n${createInviteUrl(window.location.href, current.roomId)}`;
     const copied = await copyTextToClipboard(text);
     setNotice({ id: createClientId(), label: copied ? "내 결과와 초대 링크를 복사했습니다." : `직접 복사해 주세요: ${text}`, tone: copied ? "success" : "normal" });
   };
@@ -565,8 +565,8 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
     return (
       <main className="join-page night-entry">
         <header className="game-topbar">
-          <Link className="brand" href="/" prefetch={false} aria-label="눈치숨 홈">
-            <span className="brand-mark" aria-hidden="true">눈</span><span>눈치숨</span>
+          <Link className="brand" href="/" prefetch={false} aria-label="눈숨 홈">
+            <span className="brand-mark" aria-hidden="true">눈</span><span>눈숨</span>
           </Link>
           <a className="text-link" href="/how-to-play">게임 방법</a>
         </header>
@@ -665,8 +665,8 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
   return (
     <main className={`play-page play-workspace ${waitingRoom ? "is-waiting" : "is-playing"}`}>
       <header className="play-header">
-        <Link className="brand compact" href="/" prefetch={false} aria-label="눈치숨 홈">
-          <span className="brand-mark" aria-hidden="true">눈</span><span>눈치숨</span>
+        <Link className="brand compact" href="/" prefetch={false} aria-label="눈숨 홈">
+          <span className="brand-mark" aria-hidden="true">눈</span><span>눈숨</span>
         </Link>
         <div className={finalChase ? "phase-summary urgent" : "phase-summary"} aria-live="polite">
           <span className={`phase-icon phase-${snapshot?.phase.toLowerCase() ?? "lobby"}`} aria-hidden="true" />
@@ -977,7 +977,7 @@ function RoleRevealOverlay({ snapshot, serverNow }: { snapshot: GameSnapshot; se
       <span className="role-reveal-symbol" aria-hidden="true">{seeker ? "☾" : "▣"}</span>
       <p className="role-reveal-kicker">{snapshot.round}라운드 역할 확정</p>
       <strong>당신은 이번 라운드 <em>{teamName}</em>입니다</strong>
-      <p className="role-reveal-alias">눈치숨 역할 이름 · {roleName}</p>
+      <p className="role-reveal-alias">눈숨 역할 이름 · {roleName}</p>
       <p className="role-reveal-goal">{seeker ? "제한시간 안에 모든 틈새정령을 찾아내세요." : "평범한 사물처럼 숨어 수색 종료까지 살아남으세요."}</p>
       <ol>{steps.map((step) => <li key={step}>{step}</li>)}</ol>
       <div className="role-reveal-footer"><time>{formatRemaining(snapshot, serverNow)}</time><span>{formatDurationLabel(snapshot.roundDurationMs)} 라운드 · 곧 {seeker ? "기준 배치 확인" : "숨기"} 시작</span></div>

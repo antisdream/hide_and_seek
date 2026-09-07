@@ -130,10 +130,10 @@ async function startStandaloneServer(): Promise<void> {
     rules: process.env.FAST_GAME === "1" ? FAST_TEST_RULES : DEFAULT_RULES,
   });
   const listeningPort = await runtime.listen(port, hostname);
-  console.log(`[눈치숨 서버] ws://${hostname}:${listeningPort} 에서 실행 중`);
+  console.log(`[눈숨 서버] ws://${hostname}:${listeningPort} 에서 실행 중`);
 
   const shutdown = async () => {
-    console.log("[눈치숨 서버] 안전하게 종료합니다.");
+    console.log("[눈숨 서버] 안전하게 종료합니다.");
     await runtime.shutdown();
   };
   process.once("SIGINT", shutdown);
@@ -145,7 +145,7 @@ const launchedDirectly = process.argv[1]
   : false;
 if (launchedDirectly) {
   startStandaloneServer().catch((error: unknown) => {
-    console.error("[눈치숨 서버] 시작하지 못했습니다.", error);
+    console.error("[눈숨 서버] 시작하지 못했습니다.", error);
     process.exitCode = 1;
   });
 }
