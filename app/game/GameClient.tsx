@@ -39,7 +39,7 @@ type GuideStage = "LOBBY" | "HIDER_HIDE" | "HIDER_SURVIVE" | "SEEKER_PREVIEW" | 
 const CONFIGURED_GAME_ENDPOINT = process.env.NEXT_PUBLIC_GAME_SERVER_URL;
 const HUD_UPDATE_INTERVAL_MS = 100;
 
-export default function GameClient() {
+export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "solo" | "friends" | "public" }) {
   const [displayName, setDisplayName] = useState("");
   const [inviteRoomId, setInviteRoomId] = useState("");
   const [inviteCodeInput, setInviteCodeInput] = useState("");
@@ -53,6 +53,7 @@ export default function GameClient() {
   const [clockNow, setClockNow] = useState(() => Date.now());
   const [serverOffset, setServerOffset] = useState(0);
   const [soloDifficulty, setSoloDifficulty] = useState<AiDifficulty>("normal");
+  const [joinMode, setJoinMode] = useState<"solo" | "friends" | "public">(initialPlay);
   const [soundEnabled, setSoundEnabled] = useState(false);
   const audioRef = useRef<GameAudio | undefined>(undefined);
   const audioToggleBusyRef = useRef(false);
@@ -161,7 +162,10 @@ export default function GameClient() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setDisplayName(readClientPreference("nunchisoom-display-name") ?? "");
-      const roomId = new URLSearchParams(window.location.search).get("room") ?? "";
+      const params = new URLSearchParams(window.location.search);
+      const roomId = params.get("room") ?? "";
+      const requestedPlay = params.get("play");
+      if (requestedPlay === "friends" || requestedPlay === "public") setJoinMode(requestedPlay);
       setInviteRoomId(roomId);
       setInviteCodeInput(roomId);
     }, 0);
@@ -559,7 +563,7 @@ export default function GameClient() {
 
   if (!room) {
     return (
-      <main className="join-page">
+      <main className="join-page night-entry">
         <header className="game-topbar">
           <Link className="brand" href="/" prefetch={false} aria-label="눈치숨 홈">
             <span className="brand-mark" aria-hidden="true">눈</span><span>눈치숨</span>
@@ -569,23 +573,20 @@ export default function GameClient() {
 
         <section className="join-layout">
           <div className="join-intro">
-            <p className="eyebrow">소리가 없어도 단서는 선명하게</p>
-            <h1>오늘 밤,<br /><em>잡화점의 눈치왕</em>은 누구?</h1>
-            <p>설치 없이 별명만 정하면 대기실에 입장할 수 있습니다. 빠른 매칭은 자리가 있는 공개 대기실로 연결되고, 방을 만들면 친구를 초대하거나 AI 참가자를 추가할 수 있습니다.</p>
-            <div className="join-quick-guide">
-              <strong>처음이라면 이것만 기억하세요</strong>
-              <ol>
-                <li>역할 안내에서 내가 숨는 팀인지 술래인지 확인합니다.</li>
-                <li>숨는 팀은 자리를 정한 뒤 위치를 고정하고, 술래는 기준 배치를 살펴봅니다.</li>
-                <li>문과 포탈은 연결된 다른 구역으로 바로 이동합니다.</li>
-              </ol>
-              <a href="/how-to-play">실제 게임 화면으로 차근차근 배우기</a>
-            </div>
-            <CharacterParade />
+            <p className="eyebrow">한밤의 잡화점에 오신 걸 환영해요</p>
+            <h2>평범하게 숨고,<br /><em>예리하게 찾아요.</em></h2>
+            <p>이번엔 연필일까요, 노트일까요?<br />세 라운드의 숨바꼭질이 기다리고 있어요.</p>
+            <figure className="entry-art"><img src="/og.png" width={1731} height={909} alt="밤지기 모루와 잡화점 사물 정령들" /></figure>
+            <div className="entry-first-steps"><strong>처음이어도, 따라올 수 있어요.</strong><p>역할 안내 → 지금 할 일 → 경기 중 도움말.<br />모든 규칙을 외우고 시작할 필요는 없어요.</p><a href="/how-to-play">조작부터 살펴보기 →</a></div>
           </div>
 
           <div className="join-card">
-            <div className="join-step"><span>1</span><div><strong>별명을 정해요</strong><small>개인정보 대신 경기에서 부를 이름만 사용합니다.</small></div></div>
+            <div className="entry-card-heading"><p className="eyebrow">플레이 준비</p><h1>{inviteRoomId ? "초대받은 방으로 가볼까요." : "어떻게 시작할까요?"}</h1><p>{inviteRoomId ? "별명을 정하고 초대받은 방에 들어가세요." : "방식을 고르고 별명만 정하면 돼요."}</p></div>
+            {!inviteRoomId && <div className="join-mode-selector" role="group" aria-label="플레이 방식">
+              <button type="button" aria-pressed={joinMode === "solo"} disabled={status === "connecting"} onClick={() => setJoinMode("solo")}>혼자 플레이</button>
+              <button type="button" aria-pressed={joinMode === "friends"} disabled={status === "connecting"} onClick={() => setJoinMode("friends")}>친구와 함께</button>
+              <button type="button" aria-pressed={joinMode === "public"} disabled={status === "connecting"} onClick={() => setJoinMode("public")}>공개방 찾기</button>
+            </div>}
             <label className="field-label" htmlFor="display-name">별명</label>
             <input
               id="display-name"
@@ -609,30 +610,28 @@ export default function GameClient() {
               </div>
             ) : (
               <div className="mode-grid unified-modes" aria-label="게임 방식 선택">
-                <section className="solo-start-card" aria-label="혼자 바로 시작">
-                  <div><strong>혼자 바로 시작</strong><small>AI 3명과 즉시 출발 · 친구를 기다릴 필요 없어요</small></div>
+                {joinMode === "solo" && <section className="solo-start-card" aria-label="혼자 바로 시작">
+                  <div><strong>AI 3명과 먼저 한 판.</strong><small>인원을 기다리지 않고 시작해요. 처음이라면 쉬움으로 조작을 익혀보세요.</small></div>
                   <label htmlFor="solo-difficulty">AI 난이도</label>
                   <select id="solo-difficulty" value={soloDifficulty} onChange={(event) => setSoloDifficulty(event.target.value as AiDifficulty)} disabled={status === "connecting"}>
                     <option value="easy">쉬움</option><option value="normal">보통</option><option value="hard">어려움</option>
                   </select>
-                  <button className="primary-button" type="button" disabled={status === "connecting"} onClick={() => void connect("invite", undefined, soloDifficulty)}>AI와 바로 시작</button>
-                </section>
-                <button className="quick-match-card" type="button" disabled={status === "connecting"} onClick={() => void connect("public")}>
-                  <span aria-hidden="true">✦</span><strong>빠른 매칭</strong><small>자리가 있는 공개 대기실에 자동 참가</small>
-                </button>
-                <section className="create-room-card" aria-labelledby="create-room-title">
+                  <button className="primary-button" type="button" disabled={status === "connecting"} onClick={() => void connect("invite", undefined, soloDifficulty)}>{status === "connecting" ? "게임에 연결하는 중…" : "AI와 바로 시작"}</button>
+                </section>}
+                {joinMode === "public" && <section className="public-start-card" aria-label="공개방 찾기"><strong>새로운 사람들과 모여요.</strong><p>빈자리가 있는 공개 대기실에 합류합니다. 방이 없으면 새 대기실이 열리고, 방장이 AI를 추가할 수 있어요.</p><button className="primary-button wide" type="button" disabled={status === "connecting"} onClick={() => void connect("public")}>{status === "connecting" ? "대기실 찾는 중…" : "공개 대기실 찾기"}</button><small>바로 한 판 시작하고 싶다면 ‘혼자 플레이’를 선택하세요.</small></section>}
+                {joinMode === "friends" && <section className="create-room-card" aria-labelledby="create-room-title">
                   <div className="create-room-heading">
                     <span aria-hidden="true">◎</span>
-                    <div><strong id="create-room-title">방 만들기</strong><small>친구를 초대하고 AI는 대기실에서 추가할 수 있어요.</small></div>
+                    <div><strong id="create-room-title">우리끼리 숨바꼭질.</strong><small>방을 만들면 친구에게 보낼 초대 링크가 생겨요.</small></div>
                   </div>
                   <button className="create-room-button" type="button" disabled={status === "connecting"} onClick={() => void connect("invite")}>
-                    새 초대방 만들기
+                    {status === "connecting" ? "대기실에 연결하는 중…" : "새 초대방 만들기"}
                   </button>
-                  <p className="create-room-note">대기실에서 방장이 AI 인원과 난이도를 정할 수 있으며, 사람과 AI를 합해 최대 10명까지 참여할 수 있습니다.</p>
-                </section>
+                  <p className="create-room-note">4~10명으로 시작해요. 부족한 인원은 대기실에서 AI로 채울 수 있어요.</p>
+                </section>}
               </div>
             )}
-            {!inviteRoomId && (
+            {!inviteRoomId && joinMode === "friends" && (
               <form
                 className="invite-join"
                 onSubmit={(event) => {
@@ -655,7 +654,7 @@ export default function GameClient() {
                 </div>
               </form>
             )}
-            <p className="join-safety">회원가입·설치 불필요 · 음성 대화 없이 플레이 가능</p>
+            <p className="join-safety">무료 · 설치·가입 없음 · 마이크 없이 플레이</p>
             {notice && <NoticeCard notice={notice} />}
           </div>
         </section>
@@ -664,7 +663,7 @@ export default function GameClient() {
   }
 
   return (
-    <main className="play-page">
+    <main className={`play-page play-workspace ${waitingRoom ? "is-waiting" : "is-playing"}`}>
       <header className="play-header">
         <Link className="brand compact" href="/" prefetch={false} aria-label="눈치숨 홈">
           <span className="brand-mark" aria-hidden="true">눈</span><span>눈치숨</span>
@@ -728,6 +727,7 @@ export default function GameClient() {
         </aside>
 
         <section className="game-column" aria-label="게임 화면">
+          <div className="play-objective"><RoleCard snapshot={snapshot} /><RoleStatusCard snapshot={snapshot} /></div>
           <div className={finalChase ? "canvas-frame final-chase" : "canvas-frame"}>
             <div ref={canvasRef} className="phaser-host" />
             {snapshot && (
@@ -750,20 +750,22 @@ export default function GameClient() {
               <StageHelpCoach snapshot={snapshot} onClose={dismissCoach} />
             )}
           </div>
+          <div className="game-controls-bar" aria-label="게임 조작">
+            <fieldset className="primary-game-actions" aria-label="역할 행동" disabled={status !== "connected"}><ActionButtons snapshot={snapshot} send={send} /></fieldset>
+            <div className="movement-controls"><span className="movement-label">{snapshot?.self.caught ? "발견됨 · 팀 신호로 지원" : snapshot?.self.locked ? "고정 해제 후 이동" : "이동"}</span><TouchPad setKey={setTouchKey} disabled={status !== "connected" || !(snapshot?.phase === "HIDING" || snapshot?.phase === "SEEKING") || Boolean(snapshot?.self.locked || snapshot?.self.caught)} /><p className="keyboard-help">WASD / 방향키</p></div>
+          </div>
           <div className="visual-feed">
             <span className={`connection-dot ${status}`} aria-hidden="true" />
-            <div className="current-task"><small>지금 할 일</small><p>{roleInstruction(snapshot)}</p></div>
+            <div className="current-task"><small>{status === "reconnecting" ? "연결 복구 중" : "연결됨"}</small><p>{controlInstruction(snapshot)}</p></div>
             {notice && <div className={`event-alert ${notice.tone ?? "normal"}`} role="status" aria-live="polite"><small>{notice.title ?? "최근 알림"}</small><p>{notice.label}</p></div>}
           </div>
         </section>
 
         <aside className="action-panel" aria-label="행동 패널">
-          <RoleCard snapshot={snapshot} />
-          <RoleStatusCard snapshot={snapshot} />
-          <ActionButtons snapshot={snapshot} send={send} />
+          <div className="panel-heading"><h2>함께 플레이</h2></div>
           <TeamPings role={snapshot?.self.role} send={send} />
-          <TouchPad setKey={setTouchKey} disabled={Boolean(snapshot?.self.locked || snapshot?.self.caught)} />
-          <p className="keyboard-help">{controlInstruction(snapshot)}</p>
+          <details className="play-rules-details"><summary>역할과 조작 다시 보기</summary><p>{roleInstruction(snapshot)}</p><p>{controlInstruction(snapshot)}</p><button type="button" onClick={() => setCoachOpen(true)}>단계별 도움말 열기</button></details>
+          <p className="team-reminder">게임의 중요한 단서는 화면에도 표시돼요. 소리를 켜지 않아도 함께할 수 있어요.</p>
         </aside>
       </section>
     </main>
@@ -1060,18 +1062,6 @@ function ResultOverlay({ snapshot, send, connected, onCopyResult }: { snapshot: 
         <button className="secondary-button" type="button" onClick={onCopyResult}>내 결과·초대 링크 복사</button>
         <small>{self?.host ? "지금 인원과 AI 난이도로 다시 시작합니다." : self?.ready ? "준비했어요. 모두 준비되면 방장이 시작합니다." : "준비하면 같은 친구들과 다시 만나요."}</small>
       </div>}
-    </div>
-  );
-}
-
-function CharacterParade() {
-  return (
-    <div className="character-parade" aria-label="눈치숨의 오리지널 캐릭터">
-      <span className="parade-prop pencil"><i /><i /><b /></span>
-      <span className="parade-prop tape"><i /><i /><b /></span>
-      <span className="parade-seeker"><i /><i /><b /></span>
-      <span className="parade-prop notebook"><i /><i /><b /></span>
-      <p>틈새정령과 밤지기 <strong>모루</strong></p>
     </div>
   );
 }
