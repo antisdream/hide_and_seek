@@ -6,7 +6,9 @@ import {
   predictLocalMovement,
   previewCameraZoom,
   projectLocalAuthorityMotion,
+  propBodyContains,
   reconcileLocalPosition,
+  reconcileStoppedMotion,
   sampleMotionAt,
   seekerThreatAccent,
 } from "../../app/game/game-renderer";
@@ -35,6 +37,44 @@ const RECONCILIATION_SHELF_MAP = {
   zones: [],
   portals: [],
 };
+
+test("정지 ACK가 100~400ms 늦어도 마지막 위치와 방향을 유지한다", () => {
+  for (const roundTripMs of [100, 200, 300, 400]) {
+    const stopped = { x: 500, y: 200, rotation: Math.PI };
+    let display = { ...stopped };
+    for (let elapsed = 0; elapsed < roundTripMs + 500; elapsed += 16) {
+      const acknowledged = elapsed >= roundTripMs;
+      const authority = {
+        serverTime: 1_000 + elapsed,
+        x: acknowledged ? stopped.x : 430 + elapsed * 0.15,
+        y: stopped.y,
+        rotation: acknowledged ? stopped.rotation : 0,
+        teleportRevision: 0,
+      };
+      display = reconcileStoppedMotion(display, authority, 16, EMPTY_TEST_MAP, 12, acknowledged ? 12 : 11);
+      assert.deepEqual(display, stopped, `RTT ${roundTripMs}, ${elapsed}ms에서 정지 좌표/방향이 달라짐`);
+    }
+  }
+});
+
+test("ACK 뒤 실제 안전 한도 때문에 다른 좌표가 확정되면 보정을 계속 허용한다", () => {
+  const display = { x: 500, y: 200, rotation: 0 };
+  const authority = { serverTime: 1_000, x: 443, y: 200, rotation: 0, teleportRevision: 0 };
+  assert.deepEqual(reconcileStoppedMotion(display, authority, 16, EMPTY_TEST_MAP, 12, 11), display);
+  const confirmed = reconcileStoppedMotion(display, authority, 16, EMPTY_TEST_MAP, 12, 12);
+  assert.ok(confirmed.x < display.x && confirmed.x > authority.x);
+  assert.equal(confirmed.y, display.y);
+  assert.ok(500 - confirmed.x <= 3.2);
+});
+
+test("연필 끝과 노트 끝은 눌리고 테이프의 투명한 여백은 옆 사물의 클릭을 가로채지 않는다", () => {
+  assert.equal(propBodyContains("pencil", "stationery", 30, 0), true);
+  assert.equal(propBodyContains("notebook", "stationery", 0, -23), true);
+  assert.equal(propBodyContains("tape", "stationery", 28, 0), false);
+  assert.equal(propBodyContains("pencil", "stationery", 0, 20), false);
+  assert.equal(propBodyContains("ribbon", "stationery", 15, 1), false);
+  assert.equal(propBodyContains("ribbon", "stationery", 15, 22), true);
+});
 
 test("큰 맵의 사전 탐색은 전체가 보이는 배율로 시작한다", () => {
   assert.equal(previewCameraZoom(1_920, 1_200, 960, 640), 0.46);

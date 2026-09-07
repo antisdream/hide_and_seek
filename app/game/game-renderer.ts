@@ -19,7 +19,8 @@ export interface LensPulse {
 
 export interface GameRenderer {
   pushSnapshot: (snapshot: GameSnapshot) => void;
-  setLocalMovement: (movement: Point) => void;
+  /** null은 연결 종료 등으로 유효하지 않게 된 정지 ACK 대기를 해제한다. */
+  setLocalMovement: (movement: Point, stopSequence?: number | null) => void;
   /** 키를 놓거나 위치를 고정하는 순간 서버에 안전하게 제안할 현재 화면 좌표다. */
   getLocalPosition: () => (Point & { teleportRevision: number }) | undefined;
   pushEffect: (effect: GameEffect) => void;
@@ -191,6 +192,49 @@ export function reconcileLocalPosition(
   return { x: corrected.x * TILE, y: corrected.y * TILE };
 }
 
+/** 정지 입력의 서버 확인 전에는 과거 좌표와 방향으로 화면을 끌어당기지 않는다. */
+export function reconcileStoppedMotion(
+  display: Pick<MotionSample, "x" | "y" | "rotation">,
+  authority: MotionSample,
+  deltaMs: number,
+  map: MapLayout,
+  pendingStopSequence: number | undefined,
+  lastAcceptedSequence: number,
+): Pick<MotionSample, "x" | "y" | "rotation"> {
+  if (pendingStopSequence !== undefined && lastAcceptedSequence < pendingStopSequence) return { ...display };
+  return {
+    ...reconcileLocalPosition(display, authority, deltaMs, map, { x: 0, y: 0 }, LOCAL_STOP_DEAD_ZONE),
+    rotation: interpolateAngle(display.rotation, authority.rotation, movementSmoothingBlend(deltaMs, 58)),
+  };
+}
+
+/** 그림의 몸체만 눌리게 해 인접한 사물을 투명한 여백이 가로채지 않는다. */
+export function propBodyContains(kind: PropKind, theme: MapTheme, x: number, y: number): boolean {
+  const circle = (cx: number, cy: number, radius: number) => Math.hypot(x - cx, y - cy) <= radius;
+  const rounded = (cx: number, cy: number, width: number, height: number, radius: number) => {
+    const dx = Math.abs(x - cx), dy = Math.abs(y - cy);
+    if (dx > width / 2 || dy > height / 2) return false;
+    const r = Math.min(radius, width / 2, height / 2);
+    return Math.hypot(Math.max(0, dx - width / 2 + r), Math.max(0, dy - height / 2 + r)) <= r;
+  };
+  const triangle = (a: Point, b: Point, c: Point) => {
+    const cross = (p: Point, q: Point) => (x - q.x) * (p.y - q.y) - (p.x - q.x) * (y - q.y);
+    const signs = [cross(a, b), cross(b, c), cross(c, a)];
+    return !signs.some(value => value < 0) || !signs.some(value => value > 0);
+  };
+  if (kind === "tape") return circle(0, 0, 19);
+  if (kind === "notebook") return rounded(0, 0, 38, 48, 6);
+  if (kind === "box") return rounded(0, 0, 42, 38, 5);
+  if (kind === "eraser") return rounded(0, 0, 42, 26, theme === "workshop" ? 16 : 10);
+  if (kind === "ribbon") return theme === "warehouse" ? rounded(0, 0, 40, 28, 5)
+    : circle(0, -3, 12) || triangle({ x: -5, y: 5 }, { x: -18, y: 24 }, { x: 0, y: 16 })
+      || triangle({ x: 5, y: 5 }, { x: 18, y: 24 }, { x: 0, y: 16 });
+  if (theme === "warehouse") return rounded(0, 0, 46, 16, 5);
+  if (theme === "workshop") return rounded(-4, 0, 38, 12, 6) || circle(-19, 0, 7)
+    || triangle({ x: 15, y: -11 }, { x: 30, y: 0 }, { x: 15, y: 11 });
+  return rounded(0, 0, 44, 14, 6) || triangle({ x: 22, y: -7 }, { x: 31, y: 0 }, { x: 22, y: 7 });
+}
+
 function interpolateAngle(from: number, to: number, ratio: number): number {
   const gap = Math.atan2(Math.sin(to - from), Math.cos(to - from));
   return from + gap * ratio;
@@ -260,7 +304,7 @@ export async function mountGameRenderer(
     private previewWorldWidth = VIEW_WIDTH;
     private previewWorldHeight = VIEW_HEIGHT;
     private localMovement: Point = { x: 0, y: 0 };
-    private localMovementChangedAt = 0;
+    private pendingStopSequence?: number;
     private serverClockOffset = 0;
     private hasServerClockOffset = false;
 
@@ -276,6 +320,11 @@ export async function mountGameRenderer(
       this.input.on("pointerup", this.endPreviewDrag, this);
       this.input.on("pointerupoutside", this.endPreviewDrag, this);
       this.input.on("wheel", this.zoomPreviewCamera, this);
+      this.scale.on("resize", () => {
+        if (!this.snapshot?.seekerPreview) return;
+        this.previewCameraActive = false;
+        this.syncPreviewCamera(this.snapshot);
+      });
       if (this.snapshot) this.applySnapshot(this.snapshot);
       else this.drawWaitingBoard();
     }
@@ -351,21 +400,19 @@ export async function mountGameRenderer(
               this.localMovement,
             );
             view.container.setPosition(reconciled.x, reconciled.y);
-          } else if (now - this.localMovementChangedAt > 160) {
-            // 키를 놓은 직후에는 마지막 서버 입력이 도착할 시간을 주고, 이후 작은 오차만 부드럽게 정리한다.
-            const reconciled = reconcileLocalPosition(
-              { x: view.container.x, y: view.container.y },
+          } else {
+            const reconciled = reconcileStoppedMotion(
+              { x: view.container.x, y: view.container.y, rotation: view.container.rotation },
               authority,
               delta,
               this.snapshot!.map,
-              { x: 0, y: 0 },
-              LOCAL_STOP_DEAD_ZONE,
+              this.pendingStopSequence,
+              this.snapshot!.self.lastAcceptedSeq,
             );
             view.container.setPosition(reconciled.x, reconciled.y);
+            view.container.setRotation(reconciled.rotation);
           }
-          view.container.rotation = moving
-            ? Math.atan2(this.localMovement.y, this.localMovement.x)
-            : interpolateAngle(view.container.rotation, authority.rotation, movementSmoothingBlend(delta, 58));
+          if (moving) view.container.rotation = Math.atan2(this.localMovement.y, this.localMovement.x);
           continue;
         }
 
@@ -377,6 +424,18 @@ export async function mountGameRenderer(
     }
 
     setSnapshot(snapshot: GameSnapshot): void {
+      const previous = this.snapshot;
+      const previousRevision = previous?.entities.find((entity) => entity.controlled)?.teleportRevision;
+      const nextRevision = snapshot.entities.find((entity) => entity.controlled)?.teleportRevision;
+      if (
+        (this.pendingStopSequence !== undefined && snapshot.self.lastAcceptedSeq >= this.pendingStopSequence)
+        || snapshot.self.caught
+        || (snapshot.phase !== "HIDING" && snapshot.phase !== "SEEKING")
+        || previous?.round !== snapshot.round
+        || previous?.self.role !== snapshot.self.role
+        || previous?.map.version !== snapshot.map.version
+        || previousRevision !== nextRevision
+      ) this.pendingStopSequence = undefined;
       const observedOffset = snapshot.serverTime - Date.now();
       this.serverClockOffset = this.hasServerClockOffset
         ? this.serverClockOffset + (observedOffset - this.serverClockOffset) * 0.12
@@ -386,10 +445,9 @@ export async function mountGameRenderer(
       if (this.sceneReady) this.applySnapshot(snapshot);
     }
 
-    setLocalMovement(movement: Point): void {
-      if (movement.x !== this.localMovement.x || movement.y !== this.localMovement.y) {
-        this.localMovementChangedAt = Date.now();
-      }
+    setLocalMovement(movement: Point, stopSequence?: number | null): void {
+      if (movement.x !== 0 || movement.y !== 0 || stopSequence === null) this.pendingStopSequence = undefined;
+      else if (stopSequence !== undefined) this.pendingStopSequence = stopSequence;
       this.localMovement = { x: movement.x, y: movement.y };
     }
 
@@ -799,12 +857,20 @@ export async function mountGameRenderer(
       const container = this.add.container(entity.x * TILE, entity.y * TILE);
       if (entity.category === "seeker") this.drawSeeker(container, entity);
       else this.drawProp(container, entity.propKind ?? "notebook", entity, this.snapshot?.map.theme ?? "stationery");
-      container.setSize(42, 42).setInteractive({ useHandCursor: true });
-      container.on("pointerdown", () => {
-        if (this.snapshot?.seekerPreview) return;
-        if ((this.snapshot?.self.tagReadyAt ?? 0) > (this.snapshot?.serverTime ?? 0)) return;
-        callbacks.onTag(entity.id);
-      });
+      // 술래가 사물 위에 겹쳐도 클릭을 가로채지 않으며, 연필 끝까지 몸체를 누를 수 있다.
+      if (entity.category === "prop") {
+        container.setSize(64, 64).setInteractive(
+          new PhaserRuntime.Geom.Rectangle(0, 0, 64, 64),
+          (_area: unknown, x: number, y: number) => propBodyContains(entity.propKind ?? "notebook", this.snapshot?.map.theme ?? "stationery", x - 32, y - 32),
+        );
+        container.input!.cursor = "pointer";
+        container.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+          if (!pointer.wasTouch && !pointer.leftButtonDown()) return;
+          if (this.snapshot?.self.role !== "SEEKER" || this.snapshot.phase !== "SEEKING" || this.snapshot.self.caught) return;
+          if (this.snapshot.self.tagReadyAt > Date.now() + this.serverClockOffset) return;
+          callbacks.onTag(entity.id);
+        });
+      }
       return container;
     }
 
@@ -1068,32 +1134,42 @@ export async function mountGameRenderer(
   }
 
   const scene = new NightStationeryScene();
+  const initialWidth = Math.max(1, Math.round(parent.clientWidth));
+  const initialHeight = Math.max(1, Math.round(parent.clientHeight));
   const game = new PhaserRuntime.Game({
     type: PhaserRuntime.AUTO,
     parent,
-    width: VIEW_WIDTH,
-    height: VIEW_HEIGHT,
+    width: initialWidth,
+    height: initialHeight,
     backgroundColor: "#171a33",
     // 빠른 이동에서도 좌표를 정수 픽셀로 강제하지 않아 미세한 떨림을 줄인다.
     render: { antialias: true, pixelArt: false, roundPixels: false },
     scale: {
-      mode: PhaserRuntime.Scale.FIT,
+      mode: PhaserRuntime.Scale.RESIZE,
       autoCenter: PhaserRuntime.Scale.CENTER_BOTH,
-      width: VIEW_WIDTH,
-      height: VIEW_HEIGHT,
+      width: initialWidth,
+      height: initialHeight,
     },
     scene,
     audio: { noAudio: true },
   });
+  // CSS에 맞춰 실제 렌더링 영역을 바꾼다. 작은 화면에서 사물까지 통째로 축소하지 않는다.
+  const resizeObserver = new ResizeObserver(() => {
+    const width = Math.round(parent.clientWidth);
+    const height = Math.round(parent.clientHeight);
+    if (width > 0 && height > 0 && (game.scale.width !== width || game.scale.height !== height)) game.scale.setParentSize(width, height);
+  });
+  resizeObserver.observe(parent);
 
   return {
     pushSnapshot: (snapshot) => scene.setSnapshot(snapshot),
-    setLocalMovement: (movement) => scene.setLocalMovement(movement),
+    setLocalMovement: (movement, stopSequence) => scene.setLocalMovement(movement, stopSequence),
     getLocalPosition: () => scene.getLocalPosition(),
     pushEffect: (effect) => scene.addEffect(effect),
     pushLens: (pulse) => scene.addLens(pulse),
     pushPing: (ping) => scene.addPing(ping),
     destroy: () => {
+      resizeObserver.disconnect();
       parent.classList.remove("preview-camera-active", "preview-camera-dragging");
       game.destroy(true);
     },

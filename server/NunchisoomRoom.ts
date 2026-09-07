@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { TAG_HISTORY_WINDOW_MS, wasRecentlyWithinTagRange, type TagPosition } from "./tag-history";
 import { Room, ServerError, type AuthContext, type Client } from "@colyseus/core";
 import { z } from "zod";
 import { isAllowedRequestOrigin, SAME_HOST_ORIGIN } from "./origin-policy";
@@ -117,6 +118,7 @@ interface InternalPlayer extends Point {
   lastChatAt: number;
   lastMovedAt: number;
   portalReadyAt: number;
+  lastTeleportedAt: number;
   teleportRevision: number;
   lastSeq: number;
   inputX: number;
@@ -166,6 +168,7 @@ export class NunchisoomRoom extends Room {
   private preparedSeekerIds = new Set<string>();
   private readonly replay: ReplayBeat[] = [];
   private readonly recentMoves: RecentMove[] = [];
+  private readonly tagPositions = new Map<string, TagPosition[]>();
   private readonly lobbyChat: LobbyChatMessage[] = [];
   private runtimeConfig: RuntimeConfig = DEFAULT_RUNTIME_CONFIG;
   private mode: RoomMode = "public";
@@ -274,6 +277,7 @@ export class NunchisoomRoom extends Room {
       lastChatAt: 0,
       lastMovedAt: 0,
       portalReadyAt: 0,
+      lastTeleportedAt: 0,
       teleportRevision: 0,
       lastSeq: -1,
       inputX: 0,
@@ -360,6 +364,7 @@ export class NunchisoomRoom extends Room {
     this.advancePhase(now);
     this.updateBots(deltaTime, now);
     this.updatePlayers(deltaTime, now);
+    this.recordTagPositions(now);
     this.resolveTaunts(now);
     this.pruneRecentMoves(now);
     this.version += 1;
@@ -447,6 +452,7 @@ export class NunchisoomRoom extends Room {
 
   /** 역할 공개 전에 맵과 역할을 확정하되, 다른 이용자의 위치는 스냅샷에서 숨긴다. */
   private prepareRound(): void {
+    this.tagPositions.clear();
     this.round += 1;
     // Node와 Workers 타입을 함께 사용할 때 Buffer 전용 메서드에 의존하지 않도록 바이트로 시드를 조합한다.
     const seedBytes = randomBytes(4);
@@ -509,6 +515,7 @@ export class NunchisoomRoom extends Room {
       player.movementBudget = createMovementBudget(Date.now());
       player.lastMovedAt = 0;
       player.portalReadyAt = 0;
+      player.lastTeleportedAt = 0;
       player.teleportRevision = 0;
       player.botTarget = undefined;
       player.botTargetEntityId = undefined;
@@ -669,6 +676,7 @@ export class NunchisoomRoom extends Room {
     player.y = transfer.y;
     player.teleportRevision += 1;
     player.portalReadyAt = now + 900;
+    player.lastTeleportedAt = now;
     player.lastMovedAt = now;
     const effect = {
       type: "portal" as const,
@@ -921,6 +929,7 @@ export class NunchisoomRoom extends Room {
     }
     player.inputX = normalized.x;
     player.inputY = normalized.y;
+    if (!stopping) player.rotation = Math.round((Math.atan2(normalized.y, normalized.x) * 180) / Math.PI);
   }
 
   /**
@@ -953,7 +962,7 @@ export class NunchisoomRoom extends Room {
     player.y = next.y;
     if (distance(before, player) < 0.001) return;
 
-    player.rotation = Math.round((Math.atan2(requestedMovement.y, requestedMovement.x) * 180) / Math.PI);
+    // 위치 보정 벡터는 이동 의도가 아니다. 멈춘 뒤 반대 방향으로 고개가 돌아가지 않게 한다.
     player.lastMovedAt = now;
     this.applyPortal(player, now);
     if (player.role === "HIDER") {
@@ -995,6 +1004,7 @@ export class NunchisoomRoom extends Room {
     target.id = previous.entityId;
     player.teleportRevision += 1;
     target.teleportRevision = (target.teleportRevision ?? 0) + 1;
+    player.lastTeleportedAt = Date.now();
     player.swapUsed = true;
     this.addReplay("swap", `${player.displayName} 님이 사물과 자리를 바꿨습니다.`);
     const swapEffect = {
@@ -1023,6 +1033,23 @@ export class NunchisoomRoom extends Room {
     this.attemptTag(seeker, message.entityId, now, client);
   }
 
+  private recordTagPositions(now: number): void {
+    if (this.phase !== "SEEKING") { this.tagPositions.clear(); return; }
+    const activeIds = new Set<string>();
+    for (const player of this.players.values()) {
+      if (player.role !== "HIDER" || player.caught) continue;
+      activeIds.add(player.id);
+      const history = (this.tagPositions.get(player.id) ?? []).filter((sample) =>
+        now - sample.at <= TAG_HISTORY_WINDOW_MS
+        && sample.entityId === player.entityId
+        && sample.teleportRevision === player.teleportRevision
+      );
+      history.push({ at: now, x: player.x, y: player.y, entityId: player.entityId, teleportRevision: player.teleportRevision });
+      this.tagPositions.set(player.id, history);
+    }
+    for (const id of this.tagPositions.keys()) if (!activeIds.has(id)) this.tagPositions.delete(id);
+  }
+
   private attemptTag(seeker: InternalPlayer, entityId: string, now: number, client?: Client): boolean {
     if (seeker.role !== "SEEKER" || seeker.caught || this.phase !== "SEEKING") return false;
     if (now < seeker.tagReadyAt || seeker.focus <= 0) {
@@ -1038,7 +1065,12 @@ export class NunchisoomRoom extends Room {
     );
     const targetProp = this.staticProps.find((prop) => prop.id === entityId);
     const target = targetHider ?? targetProp;
-    if (!target || distance(seeker, target) > this.rules.tagDistance) {
+    const withinReach = target && (distance(seeker, target) <= this.rules.tagDistance || (
+      targetHider && wasRecentlyWithinTagRange(
+        seeker, targetHider, this.tagPositions.get(targetHider.id) ?? [], now, this.rules.tagDistance, this.generatedMap.layout,
+      )
+    ));
+    if (!target || !withinReach) {
       if (client) this.sendError(client, "조금 더 가까이 가 주세요", "물건에 가까이 다가간 뒤 눌러 주세요.");
       return false;
     }
@@ -1405,6 +1437,7 @@ export class NunchisoomRoom extends Room {
       lastChatAt: 0,
       lastMovedAt: 0,
       portalReadyAt: 0,
+      lastTeleportedAt: 0,
       teleportRevision: 0,
       lastSeq: -1,
       inputX: 0,

@@ -56,6 +56,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
   const [soloDifficulty, setSoloDifficulty] = useState<AiDifficulty>("normal");
   const [joinMode, setJoinMode] = useState<"solo" | "friends" | "public">(initialPlay);
   const [soundEnabled, setSoundEnabled] = useState(false);
+  const [panelsOpen, setPanelsOpen] = useState(false);
   const audioRef = useRef<GameAudio | undefined>(undefined);
   const audioToggleBusyRef = useRef(false);
   const connectionGenerationRef = useRef(0);
@@ -102,6 +103,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
         message.anchorY = anchor.y;
         message.anchorRevision = anchor.teleportRevision;
       }
+      rendererRef.current?.setLocalMovement(direction, message.seq);
     }
     activeRoom.send("move", message);
     lastSentMovementRef.current = direction;
@@ -376,11 +378,12 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
         console.warn("[눈숨 연결 끊김]", JSON.stringify({ code, reason, phase: snapshotRef.current?.phase }));
         pressedKeysRef.current.clear();
         lastSentMovementRef.current = { x: 0, y: 0 };
-        rendererRef.current?.setLocalMovement({ x: 0, y: 0 });
+        rendererRef.current?.setLocalMovement({ x: 0, y: 0 }, null);
         setStatus("reconnecting");
       });
       joinedRoom.onReconnect(() => {
         if (roomRef.current !== joinedRoom) { leaveGameRoom(joinedRoom); return; }
+        rendererRef.current?.setLocalMovement({ x: 0, y: 0 }, null);
         setStatus("connected");
         joinedRoom.send("chat:sync", true);
         setNotice({ id: createClientId(), label: "다시 연결됐어요. 이어서 즐겨요!", tone: "success" });
@@ -498,6 +501,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
         }
       }
       // WebSocket 순서를 이용해 서버가 정지 좌표를 먼저 확정한 다음 그 자리에서 고정한다.
+      rendererRef.current?.setLocalMovement({ x: 0, y: 0 }, stopMessage.seq);
       activeRoom.send("move", stopMessage);
       lastSentMovementRef.current = { x: 0, y: 0 };
       activeRoom.send(type, payload);
@@ -665,7 +669,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
   }
 
   return (
-    <main className={`play-page play-workspace ${waitingRoom ? "is-waiting" : "is-playing"}`}>
+    <main className={`play-page play-workspace ${waitingRoom ? "is-waiting" : "is-playing"} ${panelsOpen ? "panels-open" : ""}`}>
       <header className="play-header">
         <Link className="brand compact" href="/" prefetch={false} aria-label="눈숨 홈">
           <span className="brand-mark" aria-hidden="true">눈</span><span>눈숨</span>
@@ -675,20 +679,23 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
           <div><small>{finalChase ? "막판 위험 경보" : phaseKicker(snapshot?.phase)}</small><strong>{finalChase ? "마지막 추격" : phaseLabel(snapshot?.phase)}</strong></div>
           <time>{formatRemaining(snapshot, serverNow)}</time>
         </div>
-        <div className="room-tools">
-          <button type="button" aria-pressed={soundEnabled} onClick={() => void toggleSound()} title="배경음과 효과음은 선택 사항입니다">{soundEnabled ? "소리 끄기" : "소리 켜기"}</button>
+        <div className="play-header-actions">
           <button type="button" onClick={() => setCoachOpen(true)} disabled={!snapshot}>
-            단계별 도움말
+            도움말
           </button>
+          {!waitingRoom && <button type="button" aria-expanded={panelsOpen} aria-controls="participants-panel" onClick={() => setPanelsOpen(open => !open)}>참가자·팀</button>}
+          <details className="room-menu"><summary>메뉴</summary><div className="room-tools">
+          <button type="button" aria-pressed={soundEnabled} onClick={() => void toggleSound()} title="배경음과 효과음은 선택 사항입니다">{soundEnabled ? "소리 끄기" : "소리 켜기"}</button>
           <button type="button" onClick={() => void copyInvite()} title="초대 링크 복사">
             초대 코드 {shortRoomId(room.roomId)} <span>링크 복사</span>
           </button>
           <button type="button" className="leave-button" onClick={() => void disconnect()}>나가기</button>
+          </div></details>
         </div>
       </header>
 
       <section className="play-grid">
-        <aside className="players-panel" aria-label="참가자 목록">
+        <aside className="players-panel" id="participants-panel" aria-label="참가자 목록">
           <div className="panel-heading"><div><small>{modeLabel(snapshot?.mode)}</small><h2>참가자</h2></div><strong>{snapshot?.players.length ?? 0}/{snapshot?.maxPlayers ?? 10}</strong></div>
           <div className="player-list">
             {snapshot?.players.map((player) => (
@@ -726,10 +733,19 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
             />
           )}
           <div className="silent-note"><span aria-hidden="true">◫</span><p><strong>소리 없이도 플레이 가능</strong><br />중요한 상황을 색·모양·문구로 알려드립니다.</p></div>
+          <section className="action-panel" aria-label="팀 신호와 설명">
+            <div className="panel-heading"><h2>함께 플레이</h2></div>
+            <TeamPings role={snapshot?.self.role} send={send} />
+            <details className="play-rules-details"><summary>역할과 조작 다시 보기</summary><p>{roleInstruction(snapshot)}</p><p>{controlInstruction(snapshot)}</p><button type="button" onClick={() => { setPanelsOpen(false); setCoachOpen(true); }}>단계별 도움말 열기</button></details>
+            <p className="team-reminder">게임의 중요한 단서는 화면에도 표시돼요. 소리를 켜지 않아도 함께할 수 있어요.</p>
+          </section>
         </aside>
 
         <section className="game-column" aria-label="게임 화면">
-          <div className="play-objective"><RoleCard snapshot={snapshot} /><RoleStatusCard snapshot={snapshot} /></div>
+          <details className="play-objective">
+            <summary><strong>{snapshot?.self.role === "HIDER" ? "▣ 숨는 팀" : snapshot?.self.role === "SEEKER" ? "☾ 술래" : "역할 확인 중"}</strong><span>{snapshot?.self.caught ? "들켰어요" : snapshot?.self.role === "SEEKER" ? `집중력 ${Math.round(snapshot.self.focus)}` : snapshot?.self.locked ? "위치 고정 중" : "이동 가능"}</span><span className="objective-expand">역할·조작 설명 ⌄</span></summary>
+            <div className="play-objective-details"><RoleCard snapshot={snapshot} /><RoleStatusCard snapshot={snapshot} /></div>
+          </details>
           <div className={finalChase ? "canvas-frame final-chase" : "canvas-frame"}>
             <div ref={canvasRef} className="phaser-host" />
             {snapshot && (
@@ -751,10 +767,10 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
             {coachOpen && snapshot && guideStageFor(snapshot) && (
               <StageHelpCoach snapshot={snapshot} onClose={dismissCoach} />
             )}
+            {!waitingRoom && <div className="movement-controls"><span className="movement-label">{snapshot?.self.caught ? "발견됨" : snapshot?.self.locked ? "위치 고정 중" : "이동"}</span><TouchPad setKey={setTouchKey} disabled={status !== "connected" || !(snapshot?.phase === "HIDING" || snapshot?.phase === "SEEKING") || Boolean(snapshot?.self.locked || snapshot?.self.caught)} /></div>}
           </div>
           <div className="game-controls-bar" aria-label="게임 조작">
             <fieldset className="primary-game-actions" aria-label="역할 행동" disabled={status !== "connected"}><ActionButtons snapshot={snapshot} send={send} /></fieldset>
-            <div className="movement-controls"><span className="movement-label">{snapshot?.self.caught ? "발견됨 · 팀 신호로 지원" : snapshot?.self.locked ? "고정 해제 후 이동" : "이동"}</span><TouchPad setKey={setTouchKey} disabled={status !== "connected" || !(snapshot?.phase === "HIDING" || snapshot?.phase === "SEEKING") || Boolean(snapshot?.self.locked || snapshot?.self.caught)} /><p className="keyboard-help">WASD / 방향키</p></div>
           </div>
           <div className="visual-feed">
             <span className={`connection-dot ${status}`} aria-hidden="true" />
@@ -763,12 +779,6 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
           </div>
         </section>
 
-        <aside className="action-panel" aria-label="행동 패널">
-          <div className="panel-heading"><h2>함께 플레이</h2></div>
-          <TeamPings role={snapshot?.self.role} send={send} />
-          <details className="play-rules-details"><summary>역할과 조작 다시 보기</summary><p>{roleInstruction(snapshot)}</p><p>{controlInstruction(snapshot)}</p><button type="button" onClick={() => setCoachOpen(true)}>단계별 도움말 열기</button></details>
-          <p className="team-reminder">게임의 중요한 단서는 화면에도 표시돼요. 소리를 켜지 않아도 함께할 수 있어요.</p>
-        </aside>
       </section>
     </main>
   );
@@ -908,7 +918,7 @@ function ActionButtons({ snapshot, send }: { snapshot?: GameSnapshot; send: (typ
           <HelpTooltip label="위치 고정" copy="움직임을 멈춰 눈에 덜 띄게 숨어요. 다시 움직이려면 ‘고정 해제’를 눌러 주세요. 수색 시간에는 미션 구역에서 2초 동안 고정하면 점수를 얻어요." />
         </div>
         <div className="action-item">
-          <button type="button" disabled={!snapshot.self.swapAvailable} onClick={() => send("swap", true)}><span>⇄</span><strong>{snapshot.self.swapAvailable ? "무작위 자리바꿈" : "자리바꿈 사용 완료"}</strong><small>{snapshot.self.swapAvailable ? "맵 전체 같은 사물 중 한 곳 · 1회" : "다음 라운드에 다시 사용할 수 있어요"}</small></button>
+          <button type="button" disabled={!snapshot.self.swapAvailable} onClick={() => send("swap", true)}><span>⇄</span><strong>{snapshot.self.swapAvailable ? "자리바꿈" : "사용 완료"}</strong><small>{snapshot.self.swapAvailable ? "맵 전체 같은 사물 중 한 곳 · 1회" : "다음 라운드에 다시 사용할 수 있어요"}</small></button>
           <HelpTooltip label="무작위 자리바꿈" copy="가게 안의 같은 종류 물건 중 하나와 무작위로 자리를 바꿔요. 라운드마다 한 번만 쓸 수 있어요. 들킬 것 같을 때 사용해 보세요." />
         </div>
         {snapshot.self.taunt && <div className="action-item taunt-action">
