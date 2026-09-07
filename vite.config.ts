@@ -56,9 +56,13 @@ export default defineConfig(async ({ mode }) => {
       "process.env.NEXT_PUBLIC_GAME_SERVER_URL": JSON.stringify(publicGameServerUrl),
       "process.env.NEXT_PUBLIC_SITE_URL": JSON.stringify(publicSiteUrl),
     },
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    server: {
+      watch: {
+        // Android lint HTML 생성이 실행 중인 웹 경기를 새로고침하지 않도록 한다.
+        ignored: ["**/android/.gradle/**", "**/android/**/build/**"],
+        ...(isCodexSeatbeltSandbox ? { useFsEvents: false, usePolling: true } : {}),
+      },
+    },
     plugins: [
       vinext(),
       sites(),

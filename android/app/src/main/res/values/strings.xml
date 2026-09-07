@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">눈숨 테스트</string>
+    <string name="offline_title">잠깐, 연결을 기다려요</string>
+    <string name="offline_message">게임에 연결하지 못했어요.\n연결을 확인한 뒤 다시 눌러 주세요.</string>
+    <string name="retry">다시 연결하기</string>
+    <string name="browser_unavailable">이 링크를 열 브라우저가 없어요.</string>
+</resources>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { ColyseusSDK, type Room } from "@colyseus/sdk";
@@ -21,6 +21,7 @@ import { canTaunt, TAUNT_RULES } from "../../shared/party-rules";
 import { GameAudio } from "./game-audio";
 import { leaveGameRoom } from "./room-lifecycle";
 import { MOVE_HEARTBEAT_INTERVAL_MS } from "../../shared/input-rules";
+import { actionForShortcut } from "../../shared/action-shortcuts";
 import { copyTextToClipboard, createClientId, readClientPreference, writeClientPreference } from "../../shared/client-runtime";
 import { normalizeInviteCode } from "../../shared/invite-code";
 import { createInviteUrl, resolveGameServerEndpoint } from "../../shared/network-url";
@@ -67,6 +68,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
   const pressedKeysRef = useRef(new Set<string>());
   const lastSentMovementRef = useRef<Point>({ x: 0, y: 0 });
   const snapshotRef = useRef<GameSnapshot | undefined>(undefined);
+  const snapshotReceivedAtRef = useRef(0);
   const localMovementLockedRef = useRef(false);
   const pendingLockRef = useRef<{ locked: boolean; requestedAt: number } | undefined>(undefined);
   const previousGuideStageRef = useRef<GuideStage | undefined>(undefined);
@@ -121,6 +123,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
   const receiveSnapshot = useCallback((nextSnapshot: GameSnapshot) => {
     audioRef.current?.snapshot(nextSnapshot);
     snapshotRef.current = nextSnapshot;
+    snapshotReceivedAtRef.current = Date.now();
     rendererRef.current?.pushSnapshot(nextSnapshot);
     const pendingLock = pendingLockRef.current;
     if (pendingLock && nextSnapshot.self.locked === pendingLock.locked) {
@@ -519,6 +522,22 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       : { id: createClientId(), label: `초대 링크를 직접 복사하세요: ${inviteUrl}`, tone: "normal" });
   }, [room]);
 
+  useEffect(() => {
+    if (!room) return;
+    const keyDown = (event: KeyboardEvent) => {
+      if (isTypingTarget(event.target) || !roomRef.current?.connection.isOpen) return;
+      const current = snapshotRef.current;
+      const action = actionForShortcut(event, current, current ? current.serverTime + (Date.now() - snapshotReceivedAtRef.current) : Date.now());
+      if (!action) return;
+      event.preventDefault();
+      // 버튼과 동일한 전송 경로로 정지 좌표 확인과 위치 고정 순서를 보존한다.
+      if (action.type === "lock" && pendingLockRef.current) action.payload = !pendingLockRef.current.locked;
+      send(action.type, action.payload);
+    };
+    window.addEventListener("keydown", keyDown);
+    return () => window.removeEventListener("keydown", keyDown);
+  }, [room, send]);
+
   const toggleSound = async () => {
     if (audioToggleBusyRef.current) return;
     audioToggleBusyRef.current = true;
@@ -914,16 +933,16 @@ function ActionButtons({ snapshot, send }: { snapshot?: GameSnapshot; send: (typ
     return (
       <div className="action-buttons">
         <div className="action-item">
-          <button type="button" aria-pressed={snapshot.self.locked} onClick={() => send("lock", !snapshot.self.locked)}><span>◆</span><strong>{snapshot.self.locked ? "고정 해제" : "위치 고정"}</strong><small>{snapshot.self.locked ? "해제해야 다시 움직일 수 있어요" : "이동키를 눌러도 움직이지 않아요"}</small></button>
+          <button type="button" aria-keyshortcuts="1" aria-pressed={snapshot.self.locked} onClick={() => send("lock", !snapshot.self.locked)}><span>◆</span><kbd className="action-shortcut" aria-hidden="true">1</kbd><strong>{snapshot.self.locked ? "고정 해제" : "위치 고정"}</strong><small>{snapshot.self.locked ? "해제해야 다시 움직일 수 있어요" : "이동키를 눌러도 움직이지 않아요"}</small></button>
           <HelpTooltip label="위치 고정" copy="움직임을 멈춰 눈에 덜 띄게 숨어요. 다시 움직이려면 ‘고정 해제’를 눌러 주세요. 수색 시간에는 미션 구역에서 2초 동안 고정하면 점수를 얻어요." />
         </div>
         <div className="action-item">
-          <button type="button" disabled={!snapshot.self.swapAvailable} onClick={() => send("swap", true)}><span>⇄</span><strong>{snapshot.self.swapAvailable ? "자리바꿈" : "사용 완료"}</strong><small>{snapshot.self.swapAvailable ? "맵 전체 같은 사물 중 한 곳 · 1회" : "다음 라운드에 다시 사용할 수 있어요"}</small></button>
+          <button type="button" aria-keyshortcuts="2" disabled={!snapshot.self.swapAvailable} onClick={() => send("swap", true)}><span>⇄</span><kbd className="action-shortcut" aria-hidden="true">2</kbd><strong>{snapshot.self.swapAvailable ? "자리바꿈" : "사용 완료"}</strong><small>{snapshot.self.swapAvailable ? "맵 전체 같은 사물 중 한 곳 · 1회" : "다음 라운드에 다시 사용할 수 있어요"}</small></button>
           <HelpTooltip label="무작위 자리바꿈" copy="가게 안의 같은 종류 물건 중 하나와 무작위로 자리를 바꿔요. 라운드마다 한 번만 쓸 수 있어요. 들킬 것 같을 때 사용해 보세요." />
         </div>
         {snapshot.self.taunt && <div className="action-item taunt-action">
-          <button type="button" disabled={snapshot.phase !== "SEEKING" || !canTaunt(snapshot.self.taunt, snapshot.serverTime, snapshot.phaseEndsAt)} onClick={() => send("taunt", true)}>
-            <span aria-hidden="true">!</span><strong>{snapshot.self.taunt.resolvesAt > snapshot.serverTime ? `${Math.ceil((snapshot.self.taunt.resolvesAt - snapshot.serverTime) / 1_000)}초 더 버티기!` : "여기 있었지!"}</strong>
+          <button type="button" aria-keyshortcuts="3" disabled={snapshot.phase !== "SEEKING" || !canTaunt(snapshot.self.taunt, snapshot.serverTime, snapshot.phaseEndsAt)} onClick={() => send("taunt", true)}>
+            <span aria-hidden="true">!</span><kbd className="action-shortcut" aria-hidden="true">3</kbd><strong>{snapshot.self.taunt.resolvesAt > snapshot.serverTime ? `${Math.ceil((snapshot.self.taunt.resolvesAt - snapshot.serverTime) / 1_000)}초 더 버티기!` : "여기 있었지!"}</strong>
             <small>{snapshot.phase !== "SEEKING" ? "수색이 시작되면 도발할 수 있어요" : snapshot.self.taunt.remaining === 0 ? "이번 라운드 도발 사용 완료" : snapshot.self.taunt.readyAt > snapshot.serverTime ? `${Math.ceil((snapshot.self.taunt.readyAt - snapshot.serverTime) / 1_000)}초 후 · ${snapshot.self.taunt.remaining}번 남음` : `위치 공개 후 6초 생존 +${TAUNT_RULES.reward}점 · ${snapshot.self.taunt.remaining}번`}</small>
           </button>
           <HelpTooltip label="도발" copy="‘나 여기 있어!’ 하고 위치를 알려요. 그 뒤 6초 동안 잡히지 않으면 20점! 도망가거나 자리를 바꿔도 돼요. 20초 간격으로, 라운드마다 2번 쓸 수 있어요. 잡히거나 연결이 끊기면 점수를 받지 못해요." />
@@ -944,11 +963,11 @@ function ActionButtons({ snapshot, send }: { snapshot?: GameSnapshot; send: (typ
   return (
     <div className="action-buttons">
       <div className="action-item">
-        <button type="button" disabled={lensSeconds > 0} onClick={() => send("lens", true)}><span>⌾</span><strong>관찰 렌즈</strong><small>{lensSeconds > 0 ? `${lensSeconds}초 뒤 충전` : "최근 움직임을 구역으로 표시"}</small></button>
+        <button type="button" aria-keyshortcuts="1" disabled={lensSeconds > 0} onClick={() => send("lens", true)}><span>⌾</span><kbd className="action-shortcut" aria-hidden="true">1</kbd><strong>관찰 렌즈</strong><small>{lensSeconds > 0 ? `${lensSeconds}초 뒤 충전` : "최근 움직임을 구역으로 표시"}</small></button>
         <HelpTooltip label="관찰 렌즈" copy="숨는 친구들이 최근 2초 동안 움직인 구역을 1.8초간 보여줘요. 어떤 물건인지는 직접 찾아야 해요. 한 번 쓰면 30초 뒤에 다시 쓸 수 있어요." />
       </div>
       <div className="action-item tag-action">
-        <div className={tagSeconds > 0 ? "tag-tip cooling" : "tag-tip"}><span aria-hidden="true">☝</span><p><strong>확인 스티커</strong><br />{tagSeconds > 0 ? `${tagSeconds.toFixed(1)}초 뒤 다시 확인` : "가까운 사물을 직접 클릭하세요."}</p></div>
+        <div className={tagSeconds > 0 ? "tag-tip cooling" : "tag-tip"}><span aria-hidden="true">☝</span><p><strong>사물 확인</strong><br />{tagSeconds > 0 ? `${tagSeconds.toFixed(1)}초 뒤 다시 확인` : "가까운 사물을 클릭·터치"}</p></div>
         <HelpTooltip label="확인 스티커" copy="2.6칸 안에 있고 선반에 가리지 않은 물건을 확인할 수 있어요. 틀리면 집중력이 25 줄고 3초를 기다려야 해요. 집중력을 모두 쓰면 6.5초 뒤에 다시 확인할 수 있어요." />
       </div>
     </div>
@@ -1040,17 +1059,22 @@ function StageHelpCoach({ snapshot, onClose }: { snapshot: GameSnapshot; onClose
 
 function TouchPad({ setKey, disabled }: { setKey: (key: string, active: boolean) => void; disabled: boolean }) {
   const bind = (key: string) => ({
-    onPointerDown: () => setKey(key, true),
+    onPointerDown: (event: PointerEvent<HTMLButtonElement>) => {
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setKey(key, true);
+    },
     onPointerUp: () => setKey(key, false),
-    onPointerLeave: () => setKey(key, false),
     onPointerCancel: () => setKey(key, false),
+    onLostPointerCapture: () => setKey(key, false),
   });
   return (
     <div className="touch-pad" aria-label={disabled ? "현재 이동할 수 없습니다" : "화면 이동키"}>
-      <button type="button" disabled={disabled} aria-label="위로 이동" {...bind("up")}>▲</button>
-      <button type="button" disabled={disabled} aria-label="왼쪽으로 이동" {...bind("left")}>◀</button>
-      <button type="button" disabled={disabled} aria-label="아래로 이동" {...bind("down")}>▼</button>
-      <button type="button" disabled={disabled} aria-label="오른쪽으로 이동" {...bind("right")}>▶</button>
+      <button type="button" disabled={disabled} aria-label="위로 이동" {...bind("up")}><b>W</b><small>▲</small></button>
+      <button type="button" disabled={disabled} aria-label="왼쪽으로 이동" {...bind("left")}><b>A</b><small>◀</small></button>
+      <button type="button" disabled={disabled} aria-label="아래로 이동" {...bind("down")}><b>S</b><small>▼</small></button>
+      <button type="button" disabled={disabled} aria-label="오른쪽으로 이동" {...bind("right")}><b>D</b><small>▶</small></button>
     </div>
   );
 }
@@ -1164,11 +1188,11 @@ function controlInstruction(snapshot?: GameSnapshot): string {
   if (!snapshot || snapshot.self.role === "SPECTATOR") return "게임이 시작되면 방향키나 화면 이동키로 움직여요.";
   if (snapshot.self.caught) return "이제 움직일 수는 없지만, 팀 신호로 친구들을 도울 수 있어요.";
   if (snapshot.self.role === "HIDER") return snapshot.self.locked
-    ? "위치 고정 중 · 다시 움직이려면 먼저 고정 해제를 누르세요."
-    : "이동: WASD / 방향키 · 자리를 정한 뒤 위치 고정을 누르세요.";
+    ? "위치 고정 중 · 숫자 1 또는 ‘고정 해제’로 다시 움직여요."
+    : "이동: WASD / 방향키 / 화면 WASD · 숫자 1 고정 · 2 자리바꿈 · 3 여기 있었지!";
   return snapshot.phase === "HIDING"
     ? "기준 배치 확인: WASD / 방향키 · 마우스 드래그 · 휠 확대/축소"
-    : "이동: WASD / 방향키 · 가까운 수상한 사물을 클릭해 확인";
+    : "이동: WASD / 방향키 / 화면 WASD · 숫자 1 관찰 렌즈 · 가까운 사물을 클릭·터치해 확인";
 }
 
 function guideStageFor(snapshot: GameSnapshot): GuideStage | undefined {

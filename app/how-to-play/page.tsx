@@ -15,7 +15,7 @@ const guideShots = [
   { image: "/how-to-play/05-preview.jpg", title: "술래는 가게 모습을 기억해요", description: "친구들이 숨는 동안, 술래에게는 원래 가게 모습만 보여요. 물건이 몇 개였는지, 어디가 비어 있었는지 살펴봐요.", notes: ["마우스로 화면을 끌고 휠로 확대할 수 있어요.", "방향키로 움직여 포탈 반대편도 둘러보세요.", "이 시간에는 숨어 있는 친구들이 보이지 않아요."], width: 1280, height: 960 },
   { image: "/how-to-play/06-seeking.jpg", title: "어? 아까와 달라졌는데?", description: "수상한 물건이 보이면 가까이 다가가 눌러 보세요. 움직인 흔적도 좋은 힌트예요.", notes: ["‘관찰 렌즈’로 최근 움직임이 있었던 구역을 볼 수 있어요.", "틀리면 집중력이 줄고 잠시 기다려야 해요.", "같은 팀에게만 보이는 신호로 힌트를 나눌 수 있어요."], width: 1280, height: 960 },
   { image: "/how-to-play/07-result.jpg", title: "한 판 더 할까요?", description: "세 라운드가 끝나면 내 점수와 순위를 볼 수 있어요. 같은 방에서 다시 시작해도 좋아요.", notes: ["친구들이 준비되면 방장이 ‘같은 방에서 한 판 더’를 눌러요.", "AI의 수와 난이도는 그대로 이어져요.", "내 결과와 초대 링크를 함께 복사할 수 있어요."], width: 1265, height: 949 },
-  { image: "/how-to-play/08-mobile.jpg", title: "휴대폰에서도 편하게", description: "맵 왼쪽 아래 이동키로 움직이고, 맵 아래 행동 버튼을 눌러요. 버튼 옆 물음표를 누르면 설명이 나와요.", notes: ["맵 위의 ‘역할·조작 설명’이나 ‘도움말’을 눌러 자세히 볼 수 있어요.", "위치를 고정했거나 들킨 뒤에는 이동할 수 없어요.", "팀 신호와 참가자 목록은 위쪽 ‘참가자·팀’에서 확인해요."], width: 390, height: 844 },
+  { image: "/how-to-play/08-mobile.jpg", title: "휴대폰에서도 편하게", description: "맵 왼쪽 아래 WASD 버튼으로 움직이고, 맵 아래 행동 버튼을 눌러요. 버튼 옆 물음표를 누르면 설명이 나와요.", notes: ["숨는 팀은 위치 고정·자리바꿈·여기 있었지!, 술래는 관찰 렌즈와 사물 터치로 놀아요.", "위치를 고정했거나 들킨 뒤에는 이동할 수 없어요.", "팀 신호와 참가자 목록은 위쪽 ‘참가자·팀’에서 확인해요."], width: 390, height: 844 },
 ];
 
 const timings = [
@@ -43,7 +43,9 @@ export default function HowToPlayPage() {
         </section>
 
         <section className="guide-quick-controls" aria-label="기본 조작">
-          <div><kbd>WASD · 방향키</kbd><span>움직이기 · 휴대폰은 화면 이동키</span></div>
+          <div><kbd>WASD · 방향키</kbd><span>움직이기 · 휴대폰은 화면의 WASD 버튼</span></div>
+          <div><kbd>숫자 1 · 2 · 3</kbd><span>숨는 팀: 위치 고정 · 자리바꿈 · 여기 있었지!</span></div>
+          <div><kbd>술래 숫자 1</kbd><span>관찰 렌즈 · 휴대폰은 같은 이름의 버튼</span></div>
           <div><kbd>클릭 · 터치</kbd><span>수상한 물건 확인하기 · 행동 버튼 누르기</span></div>
           <div><kbd>?</kbd><span>도움말 보기 · Tab 키로도 선택할 수 있어요</span></div>
         </section>

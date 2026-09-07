@@ -1207,3 +1207,55 @@ button { color: inherit; }
   .play-workspace.is-playing .visual-feed p { font-size: 12px; }
   .play-workspace.is-waiting .play-grid { grid-template-columns: 1fr; grid-template-areas: "game" "players"; }
 }
+
+/* 숫자 단축키와 접는 휴대폰의 세로·가로 화면 */
+.action-shortcut { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 23px; height: 25px; display: grid; place-items: center; border: 1px solid #94adc9; border-radius: 5px; color: #eaf2ff; background: #17273e; font-size: 14px; box-shadow: 0 2px 0 #0a1527; }
+.play-workspace.is-playing .action-item > button:has(.action-shortcut) { padding-left: 44px; }
+.touch-pad button { -webkit-touch-callout: none; }
+.play-workspace .touch-pad button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; }
+.touch-pad b { font-size: 16px; line-height: 1; }
+.touch-pad small { font-size: 9px; line-height: 1; opacity: .65; }
+.play-workspace.is-playing .action-item:first-child .help-tooltip > div { left: 0; right: auto; }
+@media (pointer: coarse), (max-width: 700px) {
+  .action-shortcut { display: none; }
+  .play-workspace.is-playing .action-item > button:has(.action-shortcut) { padding-left: 7px; }
+  .play-workspace.is-playing .action-item > button { min-height: 58px; padding-right: 25px; }
+  .play-workspace.is-playing .action-item > button strong { font-size: 14px; line-height: 1.3; word-break: keep-all; }
+  .play-workspace .action-item .help-tooltip > summary { width: 23px; height: 23px; right: 3px; }
+}
+@media (max-width: 720px) {
+  .home-width { width: calc(100% - 32px); }
+  .home-description { font-size: 16px; }
+  .home-header nav a, .home-section-heading a, .home-footer a { font-size: 14px; }
+  .home-facts span { font-size: 12px; }
+  .home-button { min-height: 52px; }
+  .home-start-actions { gap: 8px; }
+  .home-intro h1 { font-size: clamp(34px, 10vw, 40px); }
+  .home-art img { height: auto; aspect-ratio: 1.65; object-position: center; }
+  .home-faq summary { min-height: 52px; }
+}
+@media (orientation: landscape) and (max-height: 500px) {
+  .play-workspace.is-playing { height: 100dvh; min-height: 0; }
+  .play-workspace.is-playing .play-header { min-height: 46px; padding-block: 2px; }
+  .play-workspace .play-header .brand-mark { width: 28px; height: 28px; }
+  .play-workspace .phase-summary small, .play-workspace .phase-icon { display: none; }
+  .play-header-actions > button, .room-menu > summary { min-height: 38px; padding-block: 4px; }
+  .play-workspace .phase-summary { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .play-workspace .phase-summary strong { font-size: 13px; }
+  .play-workspace .phase-summary time { min-width: 0; font-size: 22px; }
+  .play-workspace.is-playing .game-column { gap: 4px; padding-block: 4px; }
+  .play-objective > summary { min-height: 28px; padding-block: 3px; }
+  .play-workspace.is-playing .canvas-frame { min-height: 100px; }
+  .play-workspace.is-playing .visual-feed { display: none; }
+  .play-workspace.is-playing .action-item > button, .play-workspace.is-playing .tag-tip { min-height: 44px; padding-block: 5px; }
+  .play-workspace.is-playing .mission-card { min-height: 24px; padding-block: 2px; }
+  .play-workspace.is-playing .action-buttons { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+  .play-workspace.is-playing .action-buttons:has(.tag-tip) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .play-workspace.is-playing .taunt-action { grid-column: auto; }
+  .canvas-frame .movement-controls { bottom: 5px; left: 5px; padding: 4px; }
+  .canvas-frame .movement-label { display: none; }
+  .canvas-frame .touch-pad { margin-top: 0; }
+  .play-objective-details { max-height: 58dvh; overflow-y: auto; }
+  .coach-card { max-height: 90%; overflow-y: auto; }
+  .play-workspace.is-playing .action-empty.preview-actions { min-height: 36px; padding-block: 5px; }
+}
