@@ -17,6 +17,8 @@
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "tsx --test tests/unit/*.test.ts",
     "test:integration": "tsx --test tests/integration/*.test.ts",
+    "release:inventory": "node scripts/release-inventory.mjs",
+    "profile:rooms": "tsx scripts/profile-room.ts",
     "verify": "npm run lint && npm run build:server && npm test && npm run build",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },

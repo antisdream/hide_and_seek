@@ -3,6 +3,8 @@ import { Room, ServerError, type AuthContext, type Client } from "@colyseus/core
 import { z } from "zod";
 import { isAllowedRequestOrigin, SAME_HOST_ORIGIN } from "./origin-policy";
 import { aiProfileFor } from "../shared/ai-rules";
+import { canTaunt, TAUNT_RULES, type TauntState } from "../shared/party-rules";
+import { consumeMovementTime, createMovementBudget, type MovementBudget } from "../shared/movement-budget";
 import {
   distance,
   hasLineOfSight,
@@ -57,6 +59,7 @@ const moveSchema = z.object({
   y: z.number().min(-1).max(1),
   anchorX: z.number().min(-1_000).max(1_000).optional(),
   anchorY: z.number().min(-1_000).max(1_000).optional(),
+  anchorRevision: z.number().int().nonnegative().optional(),
 });
 const tagSchema = z.object({
   seq: z.number().int().min(0).max(2_147_483_647),
@@ -118,8 +121,9 @@ interface InternalPlayer extends Point {
   lastSeq: number;
   inputX: number;
   inputY: number;
-  /** 클라이언트 정지 좌표 보정이 실제 이동속도를 넘지 않게 하는 마지막 적용 시각이다. */
-  lastClientAnchorAt: number;
+  /** 일반 이동과 정지 보정이 같은 실제 경과시간을 중복 사용할 수 없게 한다. */
+  movementBudget: MovementBudget;
+  taunt: TauntState;
   mission?: InternalMission;
   botTarget?: Point;
   botTargetEntityId?: string;
@@ -181,6 +185,7 @@ export class NunchisoomRoom extends Room {
   private matchId = randomUUID();
   private matchStartedAt = 0;
   private matchmakingRefreshQueue: Promise<void> = Promise.resolve();
+  private lastSnapshotAt = 0;
 
   protected getRuntimeConfig(): RuntimeConfig {
     return DEFAULT_RUNTIME_CONFIG;
@@ -191,7 +196,6 @@ export class NunchisoomRoom extends Room {
     this.mode = options.mode === "invite" ? "invite" : "public";
     this.rules = this.runtimeConfig.rules;
     this.maxMessagesPerSecond = 45;
-    this.patchRate = null;
     await this.syncMatchmaking();
 
     this.onMessage("ready", z.boolean(), (client, ready) => this.handleReady(client, ready));
@@ -200,6 +204,7 @@ export class NunchisoomRoom extends Room {
     this.onMessage("lock", z.boolean(), (client, locked) => this.handleLock(client, locked));
     this.onMessage("swap", z.literal(true), (client) => this.handleSwap(client));
     this.onMessage("lens", z.literal(true), (client) => this.handleLens(client));
+    this.onMessage("taunt", z.literal(true), (client) => this.handleTaunt(client));
     this.onMessage("ping", pingSchema, (client, message) => this.handlePing(client, message.kind));
     this.onMessage("start", z.literal(true), (client) => this.handleStart(client));
     this.onMessage("bot:add", addBotSchema, (client, message) => this.handleAddBot(client, message.difficulty));
@@ -208,6 +213,9 @@ export class NunchisoomRoom extends Room {
     this.onMessage("chat:sync", z.literal(true), (client) => this.handleChatSync(client));
 
     this.setSimulationInterval((deltaTime) => this.tick(deltaTime), 1_000 / this.rules.tickRate);
+    // simulation을 만든 뒤 기본 patch 타이머를 끈다. 반대 순서는 SDK가 clock 전용 타이머를
+    // 남겨 같은 시계를 두 번 tick하고 실제 이동 delta를 잘라낼 수 있다.
+    this.patchRate = null;
   }
 
   onAuth(_client: Client, options: unknown, context: AuthContext): false | AuthData {
@@ -270,7 +278,8 @@ export class NunchisoomRoom extends Room {
       lastSeq: -1,
       inputX: 0,
       inputY: 0,
-      lastClientAnchorAt: Date.now(),
+      movementBudget: createMovementBudget(Date.now()),
+      taunt: { readyAt: 0, resolvesAt: 0, remaining: TAUNT_RULES.usesPerRound },
       botMemoryExpiresAt: 0,
       botThinkAt: 0,
       botActionAt: 0,
@@ -290,6 +299,7 @@ export class NunchisoomRoom extends Room {
     const player = this.playerFor(client);
     if (!player) return;
     player.connected = false;
+    player.taunt.resolvesAt = 0;
     player.inputX = 0;
     player.inputY = 0;
     this.version += 1;
@@ -350,9 +360,14 @@ export class NunchisoomRoom extends Room {
     this.advancePhase(now);
     this.updateBots(deltaTime, now);
     this.updatePlayers(deltaTime, now);
+    this.resolveTaunts(now);
     this.pruneRecentMoves(now);
     this.version += 1;
-    this.sendSnapshots();
+    // 대기실·최종 결과에서는 좌표가 움직이지 않는다. 상태 전달은 최대 200ms 간격으로 충분하다.
+    if ((this.phase !== "LOBBY" && this.phase !== "FINAL") || now - this.lastSnapshotAt >= 200) {
+      this.lastSnapshotAt = now;
+      this.sendSnapshots();
+    }
   }
 
   private advancePhase(now: number): void {
@@ -447,7 +462,8 @@ export class NunchisoomRoom extends Room {
       id: opaqueId("object"),
       teleportRevision: 0,
     }));
-    this.baselineProps = this.staticProps.map((prop) => ({ ...prop }));
+    // 기억 단계는 별도 식별자를 사용한다. 두 단계의 ID 차집합으로 숨은 사람을 찾을 수 없어야 한다.
+    this.baselineProps = this.staticProps.map((prop) => ({ ...prop, id: opaqueId("object") }));
     this.result = undefined;
 
     const players = this.activePlayers();
@@ -486,10 +502,11 @@ export class NunchisoomRoom extends Room {
       player.tagReadyAt = 0;
       player.lastTagAt = 0;
       player.lensReadyAt = 0;
+      player.taunt = { readyAt: 0, resolvesAt: 0, remaining: TAUNT_RULES.usesPerRound };
       player.lastSeq = -1;
       player.inputX = 0;
       player.inputY = 0;
-      player.lastClientAnchorAt = Date.now();
+      player.movementBudget = createMovementBudget(Date.now());
       player.lastMovedAt = 0;
       player.portalReadyAt = 0;
       player.teleportRevision = 0;
@@ -555,6 +572,7 @@ export class NunchisoomRoom extends Room {
 
   private finishRound(reason: RoundResult["reason"], now: number): void {
     if (this.phase === "RESULT" || this.phase === "FINAL") return;
+    this.resolveTaunts(now);
     const winner = reason === "ALL_CAUGHT" ? "SEEKERS" : "HIDERS";
     this.result = {
       winner,
@@ -621,11 +639,14 @@ export class NunchisoomRoom extends Room {
     if (direction.x === 0 && direction.y === 0) return;
     const speed = this.movementSpeedFor(player);
     const before = { x: player.x, y: player.y };
+    // 봇은 서버가 직접 제어하며 우회 방향을 여러 번 시험한다. 클라이언트 보정 예산은 사람에게만 적용한다.
+    const allowedMs = player.bot ? Math.min(MAX_MOVEMENT_DELTA_MS, deltaTime)
+      : consumeMovementTime(player.movementBudget, now, Math.min(MAX_MOVEMENT_DELTA_MS, deltaTime), "tick");
     const next = moveWithCollisions(
       player,
       direction,
       speed,
-      Math.min(MAX_MOVEMENT_DELTA_MS, deltaTime),
+      allowedMs,
       this.generatedMap.layout,
     );
     player.x = next.x;
@@ -669,7 +690,8 @@ export class NunchisoomRoom extends Room {
   }
 
   private updateMission(player: InternalPlayer, deltaTime: number): void {
-    if (player.role !== "HIDER" || !player.mission || player.mission.completed) return;
+    if (this.phase !== "SEEKING" || player.caught || !player.connected
+      || player.role !== "HIDER" || !player.mission || player.mission.completed) return;
     const zone = this.generatedMap.layout.zones.find((entry) => entry.id === player.mission?.zoneId);
     if (!zone || !player.locked || distance(player, zone) > zone.radius) {
       player.mission.progressMs = 0;
@@ -776,10 +798,13 @@ export class NunchisoomRoom extends Room {
         .sort((a, b) => Number(b.movedRecently) - Number(a.movedRecently) || a.gap - b.gap)[0]?.player;
 
       if (noticed) {
+        // 같은 단서를 계속 보는 동안 최초 반응 시점을 뒤로 밀지 않는다.
+        if (bot.botTargetEntityId !== noticed.entityId || now >= bot.botMemoryExpiresAt) {
+          bot.botActionAt = now + profile.reactionMs;
+        }
         bot.botTargetEntityId = noticed.entityId;
         bot.botTarget = { x: noticed.x, y: noticed.y };
         bot.botMemoryExpiresAt = now + profile.memoryMs;
-        bot.botActionAt = now + profile.reactionMs;
       } else if (!bot.botTargetEntityId || now >= bot.botMemoryExpiresAt) {
         bot.botTargetEntityId = undefined;
         const nearbyProps = this.staticProps
@@ -889,6 +914,8 @@ export class NunchisoomRoom extends Room {
       && stopping
       && message.anchorX !== undefined
       && message.anchorY !== undefined
+      // 구형 클라이언트의 버전 없는 보정은 순간이동 전까지만 호환한다.
+      && (message.anchorRevision ?? 0) === player.teleportRevision
     ) {
       this.applyClientStopAnchor(player, { x: message.anchorX, y: message.anchorY }, Date.now());
     }
@@ -908,14 +935,13 @@ export class NunchisoomRoom extends Room {
       && !player.locked;
     if (!canMove || !Number.isFinite(requested.x) || !Number.isFinite(requested.y)) return;
 
-    const elapsedMs = Math.max(0, Math.min(200, now - player.lastClientAnchorAt));
-    player.lastClientAnchorAt = now;
-    const maximumDistance = this.movementSpeedFor(player) * (elapsedMs / 1_000);
-    if (maximumDistance <= 0) return;
-
     const requestedMovement = { x: requested.x - player.x, y: requested.y - player.y };
     const requestedDistance = Math.hypot(requestedMovement.x, requestedMovement.y);
     if (!Number.isFinite(requestedDistance) || requestedDistance <= 0.000_001) return;
+    const speed = this.movementSpeedFor(player);
+    const allowedMs = consumeMovementTime(player.movementBudget, now, requestedDistance / speed * 1_000, "anchor");
+    const maximumDistance = speed * allowedMs / 1_000;
+    if (maximumDistance <= 0) return;
     const ratio = Math.min(1, maximumDistance / requestedDistance);
     const before = { x: player.x, y: player.y };
     const next = moveByVectorWithCollisions(
@@ -1048,6 +1074,44 @@ export class NunchisoomRoom extends Room {
       if (client) client.send("effect", effect);
       else this.broadcast("effect", effect);
       return false;
+    }
+  }
+
+  private handleTaunt(client: Client): void {
+    const player = this.playerFor(client);
+    const now = Date.now();
+    if (!player || player.role !== "HIDER" || player.caught || !player.connected || this.phase !== "SEEKING") return;
+    if (!canTaunt(player.taunt, now, this.phaseEndsAt)) {
+      this.sendError(client, "도발 대기", "라운드당 2번, 20초 간격으로 도발할 수 있습니다. 수색 시간이 6초 넘게 남아 있어야 합니다.");
+      return;
+    }
+    player.taunt = { readyAt: now + TAUNT_RULES.cooldownMs, resolvesAt: now + TAUNT_RULES.survivalMs, remaining: player.taunt.remaining - 1 };
+    // 이름·사물 ID는 공개하지 않는다. 위치는 도발을 선택한 대가로 모든 참가자에게 한 번만 알린다.
+    const nearestZone = [...this.generatedMap.layout.zones].sort((a, b) => distance(a, player) - distance(b, player))[0];
+    this.broadcastEffect({ type: "taunt", x: player.x, y: player.y, label: `${nearestZone?.label ?? "잡화점"} 근처에서 도발! 여기 있었지!` });
+    this.recentMoves.push({ playerId: player.id, x: player.x, y: player.y, at: now });
+    for (const bot of this.players.values()) {
+      if (!bot.bot || bot.role !== "SEEKER") continue;
+      // AI도 공개된 마지막 위치만 조사한다. 도발자의 식별자나 이후 위치를 추적하지 않는다.
+      bot.botTarget = { x: player.x, y: player.y };
+      bot.botTargetEntityId = undefined;
+      bot.botThinkAt = now + aiProfileFor(bot.aiDifficulty ?? "normal").reactionMs;
+    }
+  }
+
+  private resolveTaunts(now: number): void {
+    if (this.phase !== "SEEKING") return;
+    for (const player of this.players.values()) {
+      if (!player.taunt.resolvesAt) continue;
+      if (player.caught || !player.connected) {
+        player.taunt.resolvesAt = 0;
+      } else if (now >= player.taunt.resolvesAt) {
+        player.taunt.resolvesAt = 0;
+        player.score += TAUNT_RULES.reward;
+        this.addReplay("taunt", `${player.displayName} 님이 도발 뒤 6초를 버텨 +${TAUNT_RULES.reward}점을 얻었습니다.`);
+        const client = this.clients.find((entry) => entry.sessionId === player.sessionId);
+        client?.send("effect", { id: opaqueId("effect"), type: "mission", label: `도발 생존 성공! +${TAUNT_RULES.reward}점` } satisfies GameEffect);
+      }
     }
   }
 
@@ -1213,6 +1277,8 @@ export class NunchisoomRoom extends Room {
         lensReadyAt: viewer.lensReadyAt,
         caught: viewer.caught,
         movementSpeed: this.movementSpeedFor(viewer),
+        lastAcceptedSeq: viewer.lastSeq,
+        ...(viewer.role === "HIDER" ? { taunt: { ...viewer.taunt } } : {}),
       },
       players,
       entities,
@@ -1343,7 +1409,8 @@ export class NunchisoomRoom extends Room {
       lastSeq: -1,
       inputX: 0,
       inputY: 0,
-      lastClientAnchorAt: now,
+      movementBudget: createMovementBudget(now),
+      taunt: { readyAt: 0, resolvesAt: 0, remaining: TAUNT_RULES.usesPerRound },
       botMemoryExpiresAt: 0,
       botThinkAt: 0,
       botActionAt: 0,

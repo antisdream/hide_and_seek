@@ -3,6 +3,24 @@ interface ClientCrypto {
   getRandomValues?: (values: Uint8Array) => Uint8Array;
 }
 
+type PreferenceStorage = Pick<Storage, "getItem" | "setItem">;
+const temporaryPreferences = new Map<string, string>();
+
+/** 저장소가 차단되어도 현재 페이지에서는 이름·기기 ID·도움말 설정을 유지한다. */
+export function readClientPreference(
+  key: string, storage: () => PreferenceStorage | undefined = () => globalThis.localStorage,
+): string | undefined {
+  if (temporaryPreferences.has(key)) return temporaryPreferences.get(key);
+  try { return storage()?.getItem(key) ?? undefined; } catch { return undefined; }
+}
+
+export function writeClientPreference(
+  key: string, value: string, storage: () => PreferenceStorage | undefined = () => globalThis.localStorage,
+): void {
+  temporaryPreferences.set(key, value);
+  try { storage()?.setItem(key, value); } catch { /* 현재 페이지의 메모리 설정으로 계속 플레이한다. */ }
+}
+
 /**
  * localhost가 아닌 일반 HTTP LAN 주소에서도 사용할 수 있는 클라이언트 ID를 만든다.
  * 보안 컨텍스트에서는 표준 UUID를, 그 밖에서는 난수 바이트 기반 UUID를 사용한다.

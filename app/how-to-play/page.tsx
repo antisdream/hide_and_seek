@@ -34,7 +34,7 @@ const guideShots = [
     copy: "회원가입 없이 별명만 정하면 됩니다. 빠른 매칭은 자리가 있는 공개 대기실로 들어가고, 방 만들기는 친구와 AI 구성을 직접 정할 새 대기실을 엽니다.",
     notes: ["경기에서 부를 1~12자 별명", "자리가 있는 공개 대기실에 합류하는 빠른 매칭", "새 대기실을 여는 방 만들기", "친구가 보낸 초대 코드 또는 링크로 참가"],
     markers: [[75, 42], [75, 54], [82, 80], [78, 92]],
-    tip: "방을 만든 뒤 대기실에서 방장이 쉬움·보통·어려움 AI를 필요한 만큼 한 명씩 추가하거나 삭제할 수 있습니다.",
+    tip: "혼자라면 ‘AI와 바로 시작’으로 AI 3명과 바로 출발하세요. 친구방에서는 방장이 쉬움·보통·어려움 AI를 한 명씩 추가하거나 삭제할 수 있습니다. 아래 캡처는 이전 버전의 배치를 보여줍니다.",
   },
   {
     image: "/how-to-play/02-lobby.png",
@@ -151,7 +151,7 @@ export default function HowToPlayPage() {
       </section>
 
       <section className="roles-guide" aria-label="역할 설명">
-        <article className="hider-guide"><span aria-hidden="true">▣</span><div><small>숨는 팀</small><h2>틈새정령</h2><p>이동속도 6.5로 잡화점 물건과 똑같은 모습으로 숨습니다. 빠른 이동, 위치 고정과 한 번뿐인 자리바꿈을 활용하세요.</p><ul><li>진열 미션 구역에서 2초간 고정하면 25점</li><li>이동할 때 남는 짧은 파문에 주의</li><li>발견된 뒤에도 팀 신호로 동료 지원</li></ul></div></article>
+        <article className="hider-guide"><span aria-hidden="true">▣</span><div><small>숨는 팀</small><h2>틈새정령</h2><p>이동속도 6.5로 잡화점 물건과 똑같은 모습으로 숨습니다. 빠른 이동, 위치 고정과 한 번뿐인 자리바꿈을 활용하세요.</p><ul><li>수색 중 진열 미션 구역에서 2초간 고정하면 25점</li><li>‘여기 있었지!’ 도발로 위치를 알린 뒤 6초 생존하면 20점 · 20초 간격, 라운드당 2번</li><li>도발 중 잡히거나 연결이 끊기면 보상이 없어요</li><li>발견된 뒤에도 팀 신호로 동료 지원</li><li>소리 켜기는 선택 사항이며 모든 단서는 화면에도 표시됩니다</li></ul></div></article>
         <article className="seeker-guide"><span aria-hidden="true">☾</span><div><small>술래</small><h2>밤지기</h2><p>이동속도 9.5로 숨는 팀 · 틈새정령보다 약 46% 빠릅니다. 위협적인 밤지기 외형으로 기준 배치를 비교한 뒤 수상한 사물에 확인 스티커를 붙이세요.</p><ul><li>오답이면 집중력 25 감소와 재사용 대기</li><li>관찰 렌즈는 최근 움직임 구역만 표시</li><li>선반 너머나 먼 사물은 확인 불가</li></ul></div></article>
       </section>
 

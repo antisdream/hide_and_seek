@@ -30,3 +30,9 @@ vinext, Vite, TypeScript, ESLint, Tailwind CSS, tsx, Cloudflare 개발 도구와
 ## 생성 이미지
 
 `public/og.png`는 이 프로젝트의 독자 캐릭터 설명으로 새로 생성한 래스터 이미지입니다. 외부 게임 로고, 캐릭터, 맵, 무기 이미지를 입력 자산으로 사용하지 않았습니다. 상용 공개 전 사용 중인 생성 서비스 약관과 브랜드·상표 검토를 다시 수행합니다.
+
+## 게임 오디오 · 2026-09-07
+
+`app/game/game-audio.ts`는 이 프로젝트에서 직접 정한 음열과 Web Audio 발진기로 배경음·효과음을 합성합니다. 외부 곡·녹음·샘플이나 Suno 생성곡을 포함하지 않습니다. 게임은 기본 무음이며 사용자가 켤 때만 오디오를 시작합니다.
+
+`npm run release:inventory`는 잠금 파일의 의존성 라이선스 메타데이터와 공개 에셋 해시를 `outputs/release-20260907/asset-license-inventory.json`에 기록합니다. 자동 목록은 개별 자산의 권리 확인과 상용 공개 검토를 대신하지 않습니다.

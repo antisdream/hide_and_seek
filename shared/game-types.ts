@@ -126,6 +126,10 @@ export interface SelfView {
   caught: boolean;
   /** 로컬 입력 예측에 사용하는 현재 역할의 실제 이동 속도다. */
   movementSpeed: number;
+  /** 본인이 보낸 이동·태그 메시지 중 서버가 처리한 마지막 순번이다. */
+  lastAcceptedSeq: number;
+  /** 숨는 팀 본인에게만 전달하는 도발의 서버 판정 상태다. */
+  taunt?: { readyAt: number; resolvesAt: number; remaining: number };
 }
 
 export interface RoundResult {
@@ -137,7 +141,7 @@ export interface RoundResult {
 export interface ReplayBeat {
   id: string;
   at: number;
-  type: "tag" | "wrong-tag" | "swap" | "mission" | "last-second";
+  type: "tag" | "wrong-tag" | "swap" | "mission" | "last-second" | "taunt";
   label: string;
 }
 
@@ -182,6 +186,8 @@ export interface MoveMessage {
   /** 키를 놓은 순간 화면에 보이던 좌표다. 서버는 이동 한도와 충돌을 다시 검사한 뒤에만 사용한다. */
   anchorX?: number;
   anchorY?: number;
+  /** 화면에 표시한 위치의 순간이동 버전. 포탈 이전의 지연된 정지 보정을 구분한다. */
+  anchorRevision?: number;
 }
 
 export interface TagMessage {
@@ -191,7 +197,7 @@ export interface TagMessage {
 
 export interface GameEffect {
   id: string;
-  type: "correct-tag" | "wrong-tag" | "swap" | "focus-empty" | "mission" | "phase" | "portal";
+  type: "correct-tag" | "wrong-tag" | "swap" | "focus-empty" | "mission" | "phase" | "portal" | "taunt";
   x?: number;
   y?: number;
   label: string;

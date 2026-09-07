@@ -979,8 +979,9 @@ test("이동 종료와 위치 고정은 화면에서 본 정지 좌표를 서버
       current.map,
     );
     assert.ok(distance(stopOrigin, stopAnchor) > 0.2, "정지 좌표 검증에 충분한 자유 공간이 필요합니다.");
+    const stopSequence = sequence++;
     hiderRoom.send("move", {
-      seq: sequence++,
+      seq: stopSequence,
       x: 0,
       y: 0,
       anchorX: stopAnchor.x,
@@ -988,7 +989,7 @@ test("이동 종료와 위치 고정은 화면에서 본 정지 좌표를 서버
     });
     const stopped = await waitForSnapshot(
       hiderRoom,
-      (state) => state.phase === "HIDING" && state.serverTime >= current.serverTime + 220,
+      (state) => state.phase === "HIDING" && state.self.lastAcceptedSeq >= stopSequence && state.serverTime >= current.serverTime + 220,
     );
     const stoppedEntity = controlledEntity(stopped);
     assert.ok(

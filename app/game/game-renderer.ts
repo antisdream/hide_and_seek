@@ -21,7 +21,7 @@ export interface GameRenderer {
   pushSnapshot: (snapshot: GameSnapshot) => void;
   setLocalMovement: (movement: Point) => void;
   /** 키를 놓거나 위치를 고정하는 순간 서버에 안전하게 제안할 현재 화면 좌표다. */
-  getLocalPosition: () => Point | undefined;
+  getLocalPosition: () => (Point & { teleportRevision: number }) | undefined;
   pushEffect: (effect: GameEffect) => void;
   pushLens: (pulse: LensPulse) => void;
   pushPing: (ping: TeamPing) => void;
@@ -393,10 +393,12 @@ export async function mountGameRenderer(
       this.localMovement = { x: movement.x, y: movement.y };
     }
 
-    getLocalPosition(): Point | undefined {
+    getLocalPosition(): (Point & { teleportRevision: number }) | undefined {
       for (const view of this.entityViews.values()) {
         if (!view.controlled) continue;
-        return { x: view.container.x / TILE, y: view.container.y / TILE };
+        const latest = view.samples[view.samples.length - 1];
+        if (!latest) return undefined;
+        return { x: view.container.x / TILE, y: view.container.y / TILE, teleportRevision: latest.teleportRevision };
       }
       return undefined;
     }
@@ -1175,6 +1177,7 @@ function effectColor(type: GameEffect["type"]): number {
     portal: 0x65d9f2,
     swap: 0xb996f4,
     phase: 0x9cb0ff,
+    taunt: 0xffb347,
     "wrong-tag": 0xff6f61,
     "focus-empty": 0xff435f,
   } satisfies Record<GameEffect["type"], number>)[type];

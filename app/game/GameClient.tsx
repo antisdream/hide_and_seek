@@ -16,7 +16,11 @@ import type {
   TeamPing,
 } from "../../shared/game-types";
 import { aiDifficultyLabel } from "../../shared/ai-rules";
-import { copyTextToClipboard, createClientId } from "../../shared/client-runtime";
+import { canTaunt, TAUNT_RULES } from "../../shared/party-rules";
+import { GameAudio } from "./game-audio";
+import { leaveGameRoom } from "./room-lifecycle";
+import { MOVE_HEARTBEAT_INTERVAL_MS } from "../../shared/input-rules";
+import { copyTextToClipboard, createClientId, readClientPreference, writeClientPreference } from "../../shared/client-runtime";
 import { normalizeInviteCode } from "../../shared/invite-code";
 import { createInviteUrl, resolveGameServerEndpoint } from "../../shared/network-url";
 import { mountGameRenderer, type GameRenderer, type LensPulse } from "./game-renderer";
@@ -33,7 +37,6 @@ interface Notice {
 type GuideStage = "LOBBY" | "HIDER_HIDE" | "HIDER_SURVIVE" | "SEEKER_PREVIEW" | "SEEKER_SEARCH";
 
 const CONFIGURED_GAME_ENDPOINT = process.env.NEXT_PUBLIC_GAME_SERVER_URL;
-const MOVE_SEND_INTERVAL_MS = 50;
 const HUD_UPDATE_INTERVAL_MS = 100;
 
 export default function GameClient() {
@@ -49,6 +52,11 @@ export default function GameClient() {
   const [coachOpen, setCoachOpen] = useState(false);
   const [clockNow, setClockNow] = useState(() => Date.now());
   const [serverOffset, setServerOffset] = useState(0);
+  const [soloDifficulty, setSoloDifficulty] = useState<AiDifficulty>("normal");
+  const [soundEnabled, setSoundEnabled] = useState(false);
+  const audioRef = useRef<GameAudio | undefined>(undefined);
+  const audioToggleBusyRef = useRef(false);
+  const connectionGenerationRef = useRef(0);
   const canvasRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<GameRenderer | undefined>(undefined);
   const roomRef = useRef<Room | undefined>(undefined);
@@ -65,13 +73,21 @@ export default function GameClient() {
   const hudSemanticKeyRef = useRef("");
 
   const sendMovementNow = useCallback(() => {
+    const activeRoom = roomRef.current;
+    if (!activeRoom || !activeRoom.connection.isOpen) {
+      pressedKeysRef.current.clear();
+      lastSentMovementRef.current = { x: 0, y: 0 };
+      rendererRef.current?.setLocalMovement({ x: 0, y: 0 });
+      return;
+    }
     const current = snapshotRef.current;
-    const movementBlocked = Boolean(localMovementLockedRef.current || current?.self.caught);
+    const activePhase = current?.phase === "HIDING" || current?.phase === "SEEKING";
+    const movementBlocked = !activePhase || Boolean(localMovementLockedRef.current || current?.self.caught);
     const direction = movementBlocked ? { x: 0, y: 0 } : movementFromKeys(pressedKeysRef.current);
     rendererRef.current?.setLocalMovement(direction);
-    const activeRoom = roomRef.current;
-    if (!activeRoom) return;
     const previous = lastSentMovementRef.current;
+    // 정지 입력은 전환 순간 한 번이면 충분하다. 로비·포획·결과에서 빈 입력을 계속 보내지 않는다.
+    if (direction.x === 0 && direction.y === 0 && previous.x === 0 && previous.y === 0) return;
     const message: MoveMessage = { seq: nextSequence(sequenceRef), ...direction };
     if (
       direction.x === 0
@@ -82,6 +98,7 @@ export default function GameClient() {
       if (anchor) {
         message.anchorX = anchor.x;
         message.anchorY = anchor.y;
+        message.anchorRevision = anchor.teleportRevision;
       }
     }
     activeRoom.send("move", message);
@@ -98,6 +115,7 @@ export default function GameClient() {
   }, []);
 
   const receiveSnapshot = useCallback((nextSnapshot: GameSnapshot) => {
+    audioRef.current?.snapshot(nextSnapshot);
     snapshotRef.current = nextSnapshot;
     rendererRef.current?.pushSnapshot(nextSnapshot);
     const pendingLock = pendingLockRef.current;
@@ -142,7 +160,7 @@ export default function GameClient() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setDisplayName(window.localStorage.getItem("nunchisoom-display-name") ?? "");
+      setDisplayName(readClientPreference("nunchisoom-display-name") ?? "");
       const roomId = new URLSearchParams(window.location.search).get("room") ?? "";
       setInviteRoomId(roomId);
       setInviteCodeInput(roomId);
@@ -161,7 +179,7 @@ export default function GameClient() {
     void mountGameRenderer(canvasRef.current, {
       onTag: (entityId) => {
         const activeRoom = roomRef.current;
-        if (!activeRoom) return;
+        if (!activeRoom || !activeRoom.connection.isOpen) return;
         activeRoom.send("tag", { seq: nextSequence(sequenceRef), entityId });
       },
     }).then((renderer) => {
@@ -172,7 +190,7 @@ export default function GameClient() {
       rendererRef.current = renderer;
       if (snapshotRef.current) renderer.pushSnapshot(snapshotRef.current);
       const current = snapshotRef.current;
-      renderer.setLocalMovement(localMovementLockedRef.current || current?.self.caught
+      renderer.setLocalMovement(!roomRef.current?.connection.isOpen || localMovementLockedRef.current || current?.self.caught
         ? { x: 0, y: 0 }
         : movementFromKeys(pressedKeysRef.current));
     });
@@ -197,7 +215,7 @@ export default function GameClient() {
         return;
       }
       if (previousGuideStageRef.current !== stage) {
-        const seen = window.localStorage.getItem(guideStorageKey(stage)) === "1";
+        const seen = readClientPreference(guideStorageKey(stage)) === "1";
         setCoachOpen(!seen);
         previousGuideStageRef.current = stage;
       }
@@ -209,9 +227,11 @@ export default function GameClient() {
     if (!room) return;
     const pressedKeys = pressedKeysRef.current;
     const keyDown = (event: KeyboardEvent) => {
+      if (event.isComposing || isTypingTarget(event.target)) return;
       const key = movementKey(event.key);
       if (!key) return;
       event.preventDefault();
+      if (!roomRef.current?.connection.isOpen) return;
       if (localMovementLockedRef.current) {
         setNotice({
           id: createClientId(),
@@ -228,7 +248,7 @@ export default function GameClient() {
     const keyUp = (event: KeyboardEvent) => {
       const key = movementKey(event.key);
       if (!key) return;
-      event.preventDefault();
+      if (!event.isComposing && !isTypingTarget(event.target)) event.preventDefault();
       if (pressedKeys.delete(key)) sendMovementNow();
     };
     const releaseKeys = () => {
@@ -239,14 +259,18 @@ export default function GameClient() {
     const releaseHiddenKeys = () => {
       if (document.visibilityState === "hidden") releaseKeys();
     };
+    const releaseTypingKeys = (event: FocusEvent) => {
+      if (isTypingTarget(event.target)) releaseKeys();
+    };
     window.addEventListener("keydown", keyDown);
     window.addEventListener("keyup", keyUp);
     window.addEventListener("blur", releaseKeys);
     document.addEventListener("visibilitychange", releaseHiddenKeys);
+    document.addEventListener("focusin", releaseTypingKeys);
 
     const sender = window.setInterval(() => {
       sendMovementNow();
-    }, MOVE_SEND_INTERVAL_MS);
+    }, MOVE_HEARTBEAT_INTERVAL_MS);
 
     return () => {
       window.clearInterval(sender);
@@ -254,18 +278,22 @@ export default function GameClient() {
       window.removeEventListener("keyup", keyUp);
       window.removeEventListener("blur", releaseKeys);
       document.removeEventListener("visibilitychange", releaseHiddenKeys);
+      document.removeEventListener("focusin", releaseTypingKeys);
       pressedKeys.clear();
     };
   }, [room, sendMovementNow]);
 
   useEffect(() => () => {
     clearHudSchedule();
+    connectionGenerationRef.current += 1;
+    audioRef.current?.destroy();
+    audioRef.current = undefined;
     const activeRoom = roomRef.current;
     roomRef.current = undefined;
-    if (activeRoom) void activeRoom.leave(true);
+    leaveGameRoom(activeRoom);
   }, [clearHudSchedule]);
 
-  const connect = useCallback(async (mode: RoomMode, requestedRoomId?: string) => {
+  const connect = useCallback(async (mode: RoomMode, requestedRoomId?: string, practiceDifficulty?: AiDifficulty) => {
     if (status === "connecting") return;
     const normalizedRoomId = requestedRoomId ? normalizeInviteCode(requestedRoomId) : undefined;
     if (requestedRoomId && !normalizedRoomId) {
@@ -279,8 +307,9 @@ export default function GameClient() {
     }
 
     setStatus("connecting");
+    const connectionGeneration = ++connectionGenerationRef.current;
     setNotice({ id: createClientId(), label: "게임방에 연결하는 중입니다…" });
-    window.localStorage.setItem("nunchisoom-display-name", normalizedName);
+    writeClientPreference("nunchisoom-display-name", normalizedName);
     try {
       const gameEndpoint = resolveGameServerEndpoint(window.location.href, CONFIGURED_GAME_ENDPOINT);
       const client = new ColyseusSDK(gameEndpoint);
@@ -295,37 +324,75 @@ export default function GameClient() {
           ? await joinPublicWaitingRoom(client, options)
           : await client.create("nunchisoom", options);
 
-      joinedRoom.onMessage<GameSnapshot>("state", receiveSnapshot);
+      // 느린 연결 중 페이지를 떠났다면 AI 경기를 시작하지 않고 만들어진 연결을 즉시 정리한다.
+      if (connectionGeneration !== connectionGenerationRef.current) {
+        leaveGameRoom(joinedRoom);
+        return;
+      }
+      // 입장 직후에도 서버의 10초 유예를 사용할 수 있게 SDK의 기본 5초 최소 연결시간을 해제한다.
+      joinedRoom.reconnection.minUptime = 0;
+
+      joinedRoom.onMessage<GameSnapshot>("state", (next) => {
+        if (roomRef.current === joinedRoom) receiveSnapshot(next);
+      });
       joinedRoom.onMessage<GameEffect>("effect", (effect) => {
+        if (roomRef.current !== joinedRoom) return;
+        audioRef.current?.effect(effect);
         rendererRef.current?.pushEffect(effect);
         setNotice({ id: effect.id, label: effect.label, tone: effect.type === "correct-tag" ? "success" : "normal" });
       });
-      joinedRoom.onMessage<LensPulse>("lens", (pulse) => rendererRef.current?.pushLens(pulse));
-      joinedRoom.onMessage<TeamPing>("ping", (ping) => rendererRef.current?.pushPing(ping));
+      joinedRoom.onMessage<LensPulse>("lens", (pulse) => {
+        if (roomRef.current === joinedRoom) rendererRef.current?.pushLens(pulse);
+      });
+      joinedRoom.onMessage<TeamPing>("ping", (ping) => {
+        if (roomRef.current === joinedRoom) rendererRef.current?.pushPing(ping);
+      });
       joinedRoom.onMessage<{ id: string; title: string; label: string }>("action-error", (error) => {
+        if (roomRef.current !== joinedRoom) return;
         setNotice({ ...error, tone: "error" });
       });
       joinedRoom.onMessage<{ label: string }>("notice", (message) => {
+        if (roomRef.current !== joinedRoom) return;
         setNotice({ id: createClientId(), label: message.label });
       });
       joinedRoom.onMessage<LobbyChatMessage>("chat:message", (message) => {
+        if (roomRef.current !== joinedRoom) return;
         setChatMessages((current) => appendChatMessage(current, message));
       });
       joinedRoom.onMessage<{ messages: LobbyChatMessage[] }>("chat:history", ({ messages }) => {
+        if (roomRef.current !== joinedRoom) return;
         setChatMessages(messages.slice(-40));
       });
-      joinedRoom.onMessage("chat:clear", () => setChatMessages([]));
-      joinedRoom.onDrop(() => setStatus("reconnecting"));
+      joinedRoom.onMessage("chat:clear", () => {
+        if (roomRef.current === joinedRoom) setChatMessages([]);
+      });
+      joinedRoom.onDrop((code, reason) => {
+        if (roomRef.current !== joinedRoom) return;
+        console.warn("[눈치숨 연결 끊김]", JSON.stringify({ code, reason, phase: snapshotRef.current?.phase }));
+        pressedKeysRef.current.clear();
+        lastSentMovementRef.current = { x: 0, y: 0 };
+        rendererRef.current?.setLocalMovement({ x: 0, y: 0 });
+        setStatus("reconnecting");
+      });
       joinedRoom.onReconnect(() => {
+        if (roomRef.current !== joinedRoom) { leaveGameRoom(joinedRoom); return; }
         setStatus("connected");
         joinedRoom.send("chat:sync", true);
         setNotice({ id: createClientId(), label: "게임방에 다시 연결되었습니다.", tone: "success" });
       });
       joinedRoom.onError((_code, message) => {
+        if (roomRef.current !== joinedRoom) return;
         setNotice({ id: createClientId(), title: "연결 오류", label: message || "게임 서버 연결을 확인해 주세요.", tone: "error" });
       });
-      joinedRoom.onLeave(() => {
+      joinedRoom.onLeave((code, reason) => {
         if (roomRef.current === joinedRoom) {
+          const current = snapshotRef.current;
+          console.warn("[눈치숨 연결 종료]", JSON.stringify({
+            code, reason, phase: current?.phase,
+            lastAcceptedSeq: current?.self.lastAcceptedSeq,
+            teleportRevision: current?.entities.find((entity) => entity.controlled)?.teleportRevision,
+            snapshotServerTime: current?.serverTime,
+          }));
           roomRef.current = undefined;
           snapshotRef.current = undefined;
           localMovementLockedRef.current = false;
@@ -335,9 +402,17 @@ export default function GameClient() {
           clearHudSchedule();
           setStatus("closed");
           setRoom(undefined);
+          audioRef.current?.snapshot(undefined);
           setSnapshot(undefined);
           setChatMessages([]);
           setChatText("");
+          setInviteRoomId("");
+          setInviteCodeInput("");
+          setNotice({
+            id: createClientId(), title: "게임 연결이 종료됐어요",
+            label: "서버 연결을 유지하지 못했습니다. 다시 입장해 주세요.", tone: "error",
+          });
+          window.history.replaceState({}, "", "/game");
         }
       });
 
@@ -349,6 +424,12 @@ export default function GameClient() {
       lastSentMovementRef.current = { x: 0, y: 0 };
       joinedRoom.send("chat:sync", true);
 
+      if (practiceDifficulty) {
+        for (let index = 0; index < 3; index += 1) joinedRoom.send("bot:add", { difficulty: practiceDifficulty });
+        joinedRoom.send("ready", true);
+        joinedRoom.send("start", true);
+      }
+
       if (mode !== "public" && !normalizedRoomId) {
         const url = new URL(window.location.href);
         url.pathname = "/game";
@@ -357,6 +438,7 @@ export default function GameClient() {
         setInviteRoomId(joinedRoom.roomId);
       }
     } catch (error: unknown) {
+      if (connectionGeneration !== connectionGenerationRef.current) return;
       setStatus("idle");
       setNotice({
         id: createClientId(),
@@ -367,7 +449,9 @@ export default function GameClient() {
     }
   }, [clearHudSchedule, displayName, receiveSnapshot, status]);
 
-  const disconnect = useCallback(async () => {
+  const disconnect = useCallback(() => {
+    connectionGenerationRef.current += 1;
+    audioRef.current?.snapshot(undefined);
     const activeRoom = roomRef.current;
     roomRef.current = undefined;
     snapshotRef.current = undefined;
@@ -377,7 +461,7 @@ export default function GameClient() {
     pressedKeysRef.current.clear();
     lastSentMovementRef.current = { x: 0, y: 0 };
     clearHudSchedule();
-    if (activeRoom) await activeRoom.leave(true);
+    leaveGameRoom(activeRoom);
     setRoom(undefined);
     setSnapshot(undefined);
     setChatMessages([]);
@@ -390,7 +474,7 @@ export default function GameClient() {
 
   const send = useCallback((type: string, payload: unknown) => {
     const activeRoom = roomRef.current;
-    if (!activeRoom) return;
+    if (!activeRoom || !activeRoom.connection.isOpen) return;
     if (type === "lock" && typeof payload === "boolean") {
       pendingLockRef.current = { locked: payload, requestedAt: Date.now() };
       // 잠금은 클릭한 프레임부터 막고, 해제는 서버 응답을 확인한 뒤 다시 이동을 허용한다.
@@ -404,6 +488,7 @@ export default function GameClient() {
         if (anchor) {
           stopMessage.anchorX = anchor.x;
           stopMessage.anchorY = anchor.y;
+          stopMessage.anchorRevision = anchor.teleportRevision;
         }
       }
       // WebSocket 순서를 이용해 서버가 정지 좌표를 먼저 확정한 다음 그 자리에서 고정한다.
@@ -424,7 +509,34 @@ export default function GameClient() {
       : { id: createClientId(), label: `초대 링크를 직접 복사하세요: ${inviteUrl}`, tone: "normal" });
   }, [room]);
 
+  const toggleSound = async () => {
+    if (audioToggleBusyRef.current) return;
+    audioToggleBusyRef.current = true;
+    try {
+      audioRef.current ??= new GameAudio();
+      audioRef.current.snapshot(snapshotRef.current);
+      const enabled = await audioRef.current.setEnabled(!soundEnabled);
+      setSoundEnabled(enabled);
+      if (!enabled && !soundEnabled) setNotice({ id: createClientId(), label: "이 브라우저에서 소리를 켜지 못했어요. 화면의 단서로 계속 플레이할 수 있습니다." });
+    } catch {
+      setSoundEnabled(false);
+      setNotice({ id: createClientId(), label: "소리를 켜지 못했어요. 소리 버튼을 다시 눌러 주세요." });
+    } finally {
+      audioToggleBusyRef.current = false;
+    }
+  };
+
+  const copyResult = async () => {
+    const current = snapshotRef.current;
+    if (!current || current.phase !== "FINAL") return;
+    const self = current.players.find((player) => player.id === current.self.playerId);
+    const text = `눈치숨 ${current.totalRounds}라운드 완주! ${self?.displayName ?? "나"} ${self?.score ?? 0}점 · 다음 판 함께해요\n${createInviteUrl(window.location.href, current.roomId)}`;
+    const copied = await copyTextToClipboard(text);
+    setNotice({ id: createClientId(), label: copied ? "내 결과와 초대 링크를 복사했습니다." : `직접 복사해 주세요: ${text}`, tone: copied ? "success" : "normal" });
+  };
+
   const setTouchKey = useCallback((key: string, active: boolean) => {
+    if (active && !roomRef.current?.connection.isOpen) return;
     if (active && (localMovementLockedRef.current || snapshotRef.current?.self.caught)) return;
     const changed = active
       ? !pressedKeysRef.current.has(key)
@@ -441,7 +553,7 @@ export default function GameClient() {
   const selfIsHost = Boolean(snapshot?.players.find((player) => player.id === snapshot.self.playerId)?.host);
   const dismissCoach = () => {
     const stage = snapshot ? guideStageFor(snapshot) : undefined;
-    if (stage) window.localStorage.setItem(guideStorageKey(stage), "1");
+    if (stage) writeClientPreference(guideStorageKey(stage), "1");
     setCoachOpen(false);
   };
 
@@ -491,9 +603,20 @@ export default function GameClient() {
                 <button className="primary-button wide" type="button" disabled={status === "connecting"} onClick={() => void connect("invite", inviteRoomId)}>
                   초대받은 방 입장
                 </button>
+                <button type="button" className="secondary-button" disabled={status === "connecting"} onClick={() => {
+                  setInviteRoomId(""); setInviteCodeInput(""); window.history.replaceState({}, "", "/game");
+                }}>다른 게임 시작</button>
               </div>
             ) : (
               <div className="mode-grid unified-modes" aria-label="게임 방식 선택">
+                <section className="solo-start-card" aria-label="혼자 바로 시작">
+                  <div><strong>혼자 바로 시작</strong><small>AI 3명과 즉시 출발 · 친구를 기다릴 필요 없어요</small></div>
+                  <label htmlFor="solo-difficulty">AI 난이도</label>
+                  <select id="solo-difficulty" value={soloDifficulty} onChange={(event) => setSoloDifficulty(event.target.value as AiDifficulty)} disabled={status === "connecting"}>
+                    <option value="easy">쉬움</option><option value="normal">보통</option><option value="hard">어려움</option>
+                  </select>
+                  <button className="primary-button" type="button" disabled={status === "connecting"} onClick={() => void connect("invite", undefined, soloDifficulty)}>AI와 바로 시작</button>
+                </section>
                 <button className="quick-match-card" type="button" disabled={status === "connecting"} onClick={() => void connect("public")}>
                   <span aria-hidden="true">✦</span><strong>빠른 매칭</strong><small>자리가 있는 공개 대기실에 자동 참가</small>
                 </button>
@@ -552,6 +675,7 @@ export default function GameClient() {
           <time>{formatRemaining(snapshot, serverNow)}</time>
         </div>
         <div className="room-tools">
+          <button type="button" aria-pressed={soundEnabled} onClick={() => void toggleSound()} title="배경음과 효과음은 선택 사항입니다">{soundEnabled ? "소리 끄기" : "소리 켜기"}</button>
           <button type="button" onClick={() => setCoachOpen(true)} disabled={!snapshot}>
             단계별 도움말
           </button>
@@ -611,7 +735,7 @@ export default function GameClient() {
                 <span>{snapshot.round || 1}R</span><strong>{snapshot.map.name || "밤의 문구점"}</strong>
               </div>
             )}
-            {status === "reconnecting" && <div className="game-overlay"><strong>다시 연결하는 중…</strong><span>10초 동안 참가 상태를 유지합니다.</span></div>}
+            {status === "reconnecting" && <div className="game-overlay reconnect-overlay"><strong>다시 연결하는 중…</strong><span>10초 동안 참가 상태를 유지합니다.</span></div>}
             {snapshot?.phase === "COUNTDOWN" && <RoleRevealOverlay snapshot={snapshot} serverNow={serverNow} />}
             {snapshot?.seekerPreview && (
               <div className="preview-ribbon">
@@ -620,7 +744,7 @@ export default function GameClient() {
               </div>
             )}
             {finalChase && <div className="final-chase-ribbon"><span aria-hidden="true">!</span><strong>수색 종료 15초 전</strong><small>남은 숨는 팀을 찾아보세요</small></div>}
-            {snapshot?.result && <ResultOverlay snapshot={snapshot} />}
+            {snapshot?.result && <ResultOverlay snapshot={snapshot} send={send} connected={status === "connected"} onCopyResult={() => void copyResult()} />}
             {snapshot?.self.caught && snapshot.phase === "SEEKING" && <div className="caught-ribbon">발견됐어요 · 팀 신호로 동료를 도와주세요</div>}
             {coachOpen && snapshot && guideStageFor(snapshot) && (
               <StageHelpCoach snapshot={snapshot} onClose={dismissCoach} />
@@ -783,7 +907,14 @@ function ActionButtons({ snapshot, send }: { snapshot?: GameSnapshot; send: (typ
           <button type="button" disabled={!snapshot.self.swapAvailable} onClick={() => send("swap", true)}><span>⇄</span><strong>{snapshot.self.swapAvailable ? "무작위 자리바꿈" : "자리바꿈 사용 완료"}</strong><small>{snapshot.self.swapAvailable ? "맵 전체 같은 사물 중 한 곳 · 1회" : "다음 라운드에 다시 사용할 수 있어요"}</small></button>
           <HelpTooltip label="무작위 자리바꿈" copy="거리와 관계없이 맵 전체의 같은 종류 사물 중 한 곳과 무작위로 자리를 바꿉니다. 라운드당 한 번만 사용할 수 있으니 발각 직전이나 기준 기억을 흔들 때 사용하세요." />
         </div>
-        {snapshot.mission && <div className="mission-card action-with-help"><span>진열 미션</span><strong>{snapshot.mission.label}</strong><progress max={1} value={snapshot.mission.progress}>{Math.round(snapshot.mission.progress * 100)}%</progress><HelpTooltip label="진열 미션" copy="표시된 구역 안에서 위치 고정을 2초 유지하면 25점을 받습니다. 생존보다 위험하다고 판단되면 포기해도 됩니다." /></div>}
+        {snapshot.self.taunt && <div className="action-item taunt-action">
+          <button type="button" disabled={snapshot.phase !== "SEEKING" || !canTaunt(snapshot.self.taunt, snapshot.serverTime, snapshot.phaseEndsAt)} onClick={() => send("taunt", true)}>
+            <span aria-hidden="true">!</span><strong>{snapshot.self.taunt.resolvesAt > snapshot.serverTime ? `${Math.ceil((snapshot.self.taunt.resolvesAt - snapshot.serverTime) / 1_000)}초 더 버티기!` : "여기 있었지!"}</strong>
+            <small>{snapshot.phase !== "SEEKING" ? "수색이 시작되면 도발할 수 있어요" : snapshot.self.taunt.remaining === 0 ? "이번 라운드 도발 사용 완료" : snapshot.self.taunt.readyAt > snapshot.serverTime ? `${Math.ceil((snapshot.self.taunt.readyAt - snapshot.serverTime) / 1_000)}초 후 · ${snapshot.self.taunt.remaining}번 남음` : `위치 공개 후 6초 생존 +${TAUNT_RULES.reward}점 · ${snapshot.self.taunt.remaining}번`}</small>
+          </button>
+          <HelpTooltip label="도발" copy="현재 위치를 술래와 AI에게 한 번 알립니다. 이후 6초 동안 연결을 유지하며 잡히지 않으면 20점! 도발 뒤 이동·자리바꿈이 가능하며 라운드당 2번, 20초 간격입니다. 잡히거나 연결이 끊기면 보상이 없습니다." />
+        </div>}
+        {snapshot.mission && <div className="mission-card action-with-help"><span>{snapshot.phase === "HIDING" ? "수색 시작 후 진열 미션" : "진열 미션"}</span><strong>{snapshot.mission.label}</strong><progress max={1} value={snapshot.mission.progress}>{Math.round(snapshot.mission.progress * 100)}%</progress><HelpTooltip label="진열 미션" copy="수색 중 표시된 구역 안에서 위치 고정을 2초 유지하면 25점을 받습니다. 숨기 시간에는 진행되지 않습니다. 생존보다 위험하다고 판단되면 포기해도 됩니다." /></div>}
       </div>
     );
   }
@@ -863,12 +994,12 @@ function StageHelpCoach({ snapshot, onClose }: { snapshot: GameSnapshot; onClose
     HIDER_HIDE: {
       eyebrow: "숨는 팀 · 1단계",
       title: "먼저 자연스러운 자리를 찾으세요",
-      steps: ["진열된 같은 종류 사물 무리 옆으로 이동합니다.", "자리를 정하면 위치 고정을 눌러 완전히 멈춥니다.", "여유가 있으면 표시된 미션 구역에서 2초간 고정합니다."],
+      steps: ["진열된 같은 종류 사물 무리 옆으로 이동합니다.", "자리를 정하면 위치 고정을 눌러 완전히 멈춥니다.", "미션 구역을 미리 찾아두세요. 수색이 시작된 뒤 2초간 고정하면 미션 점수를 받습니다."],
     },
     HIDER_SURVIVE: {
       eyebrow: "숨는 팀 · 2단계",
       title: "고정을 유지하고 탈출 시점을 고르세요",
-      steps: ["고정 중에는 이동키가 작동하지 않으므로 움직이기 전에 고정을 해제합니다.", "발각 직전에는 맵 전체 같은 사물로 무작위 자리바꿈을 사용합니다.", "발견된 뒤에도 팀 신호로 남은 동료를 도울 수 있습니다."],
+      steps: ["고정 중에는 이동키가 작동하지 않으므로 움직이기 전에 고정을 해제합니다.", "발각 직전에는 무작위 자리바꿈을, 위험을 감수하고 점수를 노릴 때는 ‘여기 있었지!’ 도발을 사용합니다.", "발견된 뒤에도 팀 신호로 남은 동료를 도울 수 있습니다."],
     },
     SEEKER_PREVIEW: {
       eyebrow: "술래 · 1단계",
@@ -910,12 +1041,25 @@ function TouchPad({ setKey, disabled }: { setKey: (key: string, active: boolean)
   );
 }
 
-function ResultOverlay({ snapshot }: { snapshot: GameSnapshot }) {
+function ResultOverlay({ snapshot, send, connected, onCopyResult }: { snapshot: GameSnapshot; send: (type: string, payload: unknown) => void; connected: boolean; onCopyResult: () => void }) {
+  const self = snapshot.players.find((player) => player.id === snapshot.self.playerId);
+  const ranking = [...snapshot.players].sort((a, b) => b.score - a.score);
+  const rank = self ? 1 + ranking.filter((player) => player.score > self.score).length : 0;
+  const othersReady = snapshot.players.filter((player) => !player.bot && player.id !== self?.id).every((player) => player.connected && player.ready);
   return (
     <div className="game-overlay result-overlay">
       <span>{snapshot.result?.winner === "HIDERS" ? "▣ 끝까지 자연스러웠어요" : "☾ 관찰이 정확했어요"}</span>
-      <strong>{snapshot.result?.headline}</strong>
+      <strong>{snapshot.phase === "FINAL" ? `${snapshot.totalRounds}라운드 완주! 다음 눈치왕은?` : snapshot.result?.headline}</strong>
+      {snapshot.phase === "FINAL" && <p className="result-my-score">내 기록 <b>{self?.score ?? 0}점</b> · 공동 순위 포함 {rank}위 / {ranking.length}명</p>}
       <ol>{snapshot.replay.slice(-3).map((beat) => <li key={beat.id}>{beat.label}</li>)}</ol>
+      {snapshot.phase === "FINAL" && <div className="result-actions">
+        <button className="primary-button" type="button" disabled={!connected || Boolean(self?.host && !othersReady)} onClick={() => {
+          if (self?.host) { send("ready", true); send("start", true); }
+          else send("ready", !self?.ready);
+        }}>{self?.host ? othersReady ? "같은 방에서 한 판 더" : "친구의 재경기 준비를 기다려요" : self?.ready ? "재경기 준비 취소" : "한 판 더! 준비 완료"}</button>
+        <button className="secondary-button" type="button" onClick={onCopyResult}>내 결과·초대 링크 복사</button>
+        <small>{self?.host ? "지금 인원과 AI 난이도로 다시 시작합니다." : self?.ready ? "준비했어요. 모두 준비되면 방장이 시작합니다." : "준비하면 같은 친구들과 다시 만나요."}</small>
+      </div>}
     </div>
   );
 }
@@ -938,11 +1082,17 @@ function NoticeCard({ notice }: { notice: Notice }) {
 
 function getDeviceId(): string {
   const key = "nunchisoom-device-id";
-  const current = window.localStorage.getItem(key);
-  if (current) return current;
+  const current = readClientPreference(key);
+  if (current && current.length >= 8 && current.length <= 120) return current;
   const created = createClientId();
-  window.localStorage.setItem(key, created);
+  writeClientPreference(key, created);
   return created;
+}
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest(
+    'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]',
+  ));
 }
 
 function nextSequence(ref: { current: number }): number {
