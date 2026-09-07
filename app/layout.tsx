@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import MobileLandscape from "./MobileLandscape";
 
 // 사이트 주소를 지정하지 않은 로컬·Docker 실행에서는 메타데이터 생성만 안전한 기본값을 사용한다.
 const metadataBase = process.env.NEXT_PUBLIC_SITE_URL?.trim() || "http://localhost:3000";
@@ -37,7 +38,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="ko">
-      <body>{children}</body>
+      <body><MobileLandscape>{children}</MobileLandscape></body>
     </html>
   );
 }

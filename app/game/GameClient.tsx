@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { ColyseusSDK, type Room } from "@colyseus/sdk";
@@ -22,6 +22,9 @@ import { GameAudio } from "./game-audio";
 import { leaveGameRoom } from "./room-lifecycle";
 import { MOVE_HEARTBEAT_INTERVAL_MS } from "../../shared/input-rules";
 import { actionForShortcut } from "../../shared/action-shortcuts";
+import { JoystickSendLimiter } from "../../shared/joystick-input";
+import TouchJoystick from "./TouchJoystick";
+import TouchActionButton from "./TouchActionButton";
 import { copyTextToClipboard, createClientId, readClientPreference, writeClientPreference } from "../../shared/client-runtime";
 import { normalizeInviteCode } from "../../shared/invite-code";
 import { createInviteUrl, resolveGameServerEndpoint } from "../../shared/network-url";
@@ -66,6 +69,9 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
   const roomRef = useRef<Room | undefined>(undefined);
   const sequenceRef = useRef(0);
   const pressedKeysRef = useRef(new Set<string>());
+  const analogMovementRef = useRef<Point>({ x: 0, y: 0 });
+  const joystickLimiterRef = useRef<JoystickSendLimiter | undefined>(undefined);
+  const [joystickResetKey, setJoystickResetKey] = useState(0);
   const lastSentMovementRef = useRef<Point>({ x: 0, y: 0 });
   const snapshotRef = useRef<GameSnapshot | undefined>(undefined);
   const snapshotReceivedAtRef = useRef(0);
@@ -77,10 +83,21 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
   const hudPublishedAtRef = useRef(0);
   const hudSemanticKeyRef = useRef("");
 
+  const clearAnalogInput = useCallback(() => {
+    analogMovementRef.current = { x: 0, y: 0 };
+    joystickLimiterRef.current?.reset();
+  }, []);
+
+  const currentMovement = useCallback(() => {
+    // 키보드를 누르는 동안 키보드 우선. 입력을 합쳐 대각선 속도가 빨라지지 않게 한다.
+    return pressedKeysRef.current.size > 0 ? movementFromKeys(pressedKeysRef.current) : analogMovementRef.current;
+  }, []);
+
   const sendMovementNow = useCallback(() => {
     const activeRoom = roomRef.current;
     if (!activeRoom || !activeRoom.connection.isOpen) {
       pressedKeysRef.current.clear();
+      clearAnalogInput();
       lastSentMovementRef.current = { x: 0, y: 0 };
       rendererRef.current?.setLocalMovement({ x: 0, y: 0 });
       return;
@@ -88,7 +105,8 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
     const current = snapshotRef.current;
     const activePhase = current?.phase === "HIDING" || current?.phase === "SEEKING";
     const movementBlocked = !activePhase || Boolean(localMovementLockedRef.current || current?.self.caught);
-    const direction = movementBlocked ? { x: 0, y: 0 } : movementFromKeys(pressedKeysRef.current);
+    if (movementBlocked) clearAnalogInput();
+    const direction = movementBlocked ? { x: 0, y: 0 } : currentMovement();
     rendererRef.current?.setLocalMovement(direction);
     const previous = lastSentMovementRef.current;
     // 정지 입력은 전환 순간 한 번이면 충분하다. 로비·포획·결과에서 빈 입력을 계속 보내지 않는다.
@@ -109,7 +127,16 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
     }
     activeRoom.send("move", message);
     lastSentMovementRef.current = direction;
-  }, []);
+  }, [clearAnalogInput, currentMovement]);
+
+  useEffect(() => {
+    const limiter = new JoystickSendLimiter(sendMovementNow, () => performance.now(), (callback, delay) => {
+      const timer = window.setTimeout(callback, delay);
+      return () => window.clearTimeout(timer);
+    });
+    joystickLimiterRef.current = limiter;
+    return () => { limiter.reset(); joystickLimiterRef.current = undefined; };
+  }, [sendMovementNow]);
 
   const publishHudSnapshot = useCallback((nextSnapshot: GameSnapshot) => {
     pendingHudSnapshotRef.current = undefined;
@@ -136,8 +163,9 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       pendingLockRef.current = undefined;
       localMovementLockedRef.current = nextSnapshot.self.locked;
     }
-    if (localMovementLockedRef.current || nextSnapshot.self.caught) {
+    if (localMovementLockedRef.current || nextSnapshot.self.caught || !["HIDING", "SEEKING"].includes(nextSnapshot.phase)) {
       pressedKeysRef.current.clear();
+      clearAnalogInput();
       lastSentMovementRef.current = { x: 0, y: 0 };
       rendererRef.current?.setLocalMovement({ x: 0, y: 0 });
     }
@@ -155,7 +183,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       if (pending) publishHudSnapshot(pending);
       else hudTimerRef.current = undefined;
     }, Math.max(0, HUD_UPDATE_INTERVAL_MS - elapsed));
-  }, [publishHudSnapshot]);
+  }, [clearAnalogInput, publishHudSnapshot]);
 
   const clearHudSchedule = useCallback(() => {
     if (hudTimerRef.current !== undefined) window.clearTimeout(hudTimerRef.current);
@@ -202,14 +230,14 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       const current = snapshotRef.current;
       renderer.setLocalMovement(!roomRef.current?.connection.isOpen || localMovementLockedRef.current || current?.self.caught
         ? { x: 0, y: 0 }
-        : movementFromKeys(pressedKeysRef.current));
+        : currentMovement());
     });
     return () => {
       disposed = true;
       rendererRef.current?.destroy();
       rendererRef.current = undefined;
     };
-  }, [room]);
+  }, [room, currentMovement]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -262,8 +290,9 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       if (pressedKeys.delete(key)) sendMovementNow();
     };
     const releaseKeys = () => {
-      if (pressedKeys.size === 0) return;
       pressedKeys.clear();
+      clearAnalogInput();
+      setJoystickResetKey((value) => value + 1);
       sendMovementNow();
     };
     const releaseHiddenKeys = () => {
@@ -275,6 +304,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
     window.addEventListener("keydown", keyDown);
     window.addEventListener("keyup", keyUp);
     window.addEventListener("blur", releaseKeys);
+    window.addEventListener("resize", releaseKeys);
     document.addEventListener("visibilitychange", releaseHiddenKeys);
     document.addEventListener("focusin", releaseTypingKeys);
 
@@ -287,11 +317,13 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       window.removeEventListener("keydown", keyDown);
       window.removeEventListener("keyup", keyUp);
       window.removeEventListener("blur", releaseKeys);
+      window.removeEventListener("resize", releaseKeys);
       document.removeEventListener("visibilitychange", releaseHiddenKeys);
       document.removeEventListener("focusin", releaseTypingKeys);
       pressedKeys.clear();
+      clearAnalogInput();
     };
-  }, [room, sendMovementNow]);
+  }, [room, sendMovementNow, clearAnalogInput]);
 
   useEffect(() => () => {
     clearHudSchedule();
@@ -380,12 +412,15 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
         if (roomRef.current !== joinedRoom) return;
         console.warn("[눈숨 연결 끊김]", JSON.stringify({ code, reason, phase: snapshotRef.current?.phase }));
         pressedKeysRef.current.clear();
+        clearAnalogInput();
         lastSentMovementRef.current = { x: 0, y: 0 };
         rendererRef.current?.setLocalMovement({ x: 0, y: 0 }, null);
         setStatus("reconnecting");
       });
       joinedRoom.onReconnect(() => {
         if (roomRef.current !== joinedRoom) { leaveGameRoom(joinedRoom); return; }
+        pressedKeysRef.current.clear();
+        clearAnalogInput();
         rendererRef.current?.setLocalMovement({ x: 0, y: 0 }, null);
         setStatus("connected");
         joinedRoom.send("chat:sync", true);
@@ -410,6 +445,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
           localMovementLockedRef.current = false;
           pendingLockRef.current = undefined;
           pressedKeysRef.current.clear();
+          clearAnalogInput();
           lastSentMovementRef.current = { x: 0, y: 0 };
           clearHudSchedule();
           setStatus("closed");
@@ -433,6 +469,8 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       setStatus("connected");
       setNotice({ id: createClientId(), label: "대기실에 들어왔어요.", tone: "success" });
       sequenceRef.current = 0;
+      pressedKeysRef.current.clear();
+      clearAnalogInput();
       lastSentMovementRef.current = { x: 0, y: 0 };
       joinedRoom.send("chat:sync", true);
 
@@ -459,7 +497,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
         tone: "error",
       });
     }
-  }, [clearHudSchedule, displayName, receiveSnapshot, status]);
+  }, [clearAnalogInput, clearHudSchedule, displayName, receiveSnapshot, status]);
 
   const disconnect = useCallback(() => {
     connectionGenerationRef.current += 1;
@@ -471,6 +509,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
     pendingLockRef.current = undefined;
     rendererRef.current?.setLocalMovement({ x: 0, y: 0 });
     pressedKeysRef.current.clear();
+    clearAnalogInput();
     lastSentMovementRef.current = { x: 0, y: 0 };
     clearHudSchedule();
     leaveGameRoom(activeRoom);
@@ -482,7 +521,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
     setInviteRoomId("");
     setInviteCodeInput("");
     window.history.replaceState({}, "", "/game");
-  }, [clearHudSchedule]);
+  }, [clearAnalogInput, clearHudSchedule]);
 
   const send = useCallback((type: string, payload: unknown) => {
     const activeRoom = roomRef.current;
@@ -492,6 +531,8 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       // 잠금은 클릭한 프레임부터 막고, 해제는 서버 응답을 확인한 뒤 다시 이동을 허용한다.
       if (payload) localMovementLockedRef.current = true;
       pressedKeysRef.current.clear();
+      clearAnalogInput();
+      setJoystickResetKey((value) => value + 1);
       rendererRef.current?.setLocalMovement({ x: 0, y: 0 });
       const previous = lastSentMovementRef.current;
       const stopMessage: MoveMessage = { seq: nextSequence(sequenceRef), x: 0, y: 0 };
@@ -511,7 +552,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       return;
     }
     activeRoom.send(type, payload);
-  }, []);
+  }, [clearAnalogInput]);
 
   const copyInvite = useCallback(async () => {
     if (!room) return;
@@ -564,17 +605,25 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
     setNotice({ id: createClientId(), label: copied ? "내 결과와 초대 링크를 복사했어요. 친구에게 보내 주세요!" : `직접 복사해 주세요: ${text}`, tone: copied ? "success" : "normal" });
   };
 
-  const setTouchKey = useCallback((key: string, active: boolean) => {
-    if (active && !roomRef.current?.connection.isOpen) return;
-    if (active && (localMovementLockedRef.current || snapshotRef.current?.self.caught)) return;
-    const changed = active
-      ? !pressedKeysRef.current.has(key)
-      : pressedKeysRef.current.has(key);
-    if (!changed) return;
-    if (active) pressedKeysRef.current.add(key);
-    else pressedKeysRef.current.delete(key);
-    sendMovementNow();
-  }, [sendMovementNow]);
+  const beginJoystickMovement = useCallback(() => {
+    joystickLimiterRef.current?.reset();
+  }, []);
+
+  const setJoystickMovement = useCallback((direction: Point) => {
+    const current = snapshotRef.current;
+    const moving = direction.x !== 0 || direction.y !== 0;
+    if (moving && (!roomRef.current?.connection.isOpen || localMovementLockedRef.current || current?.self.caught
+      || !(current?.phase === "HIDING" || current?.phase === "SEEKING"))) return;
+    const previous = analogMovementRef.current;
+    if (previous.x === direction.x && previous.y === direction.y) return;
+    analogMovementRef.current = direction;
+    joystickLimiterRef.current?.request(moving);
+    // 중앙 경계에서 짧게 재진입한 미전송 이동은 화면만 먼저 움직이지 않는다.
+    // 새 pointerdown은 limiter를 초기화하므로 첫 이동과 정지는 즉시 처리한다.
+    if (!moving || Math.hypot(lastSentMovementRef.current.x, lastSentMovementRef.current.y) > 0) {
+      rendererRef.current?.setLocalMovement(currentMovement());
+    }
+  }, [currentMovement]);
 
   const serverNow = clockNow + serverOffset;
   const finalChase = isFinalChase(snapshot, serverNow);
@@ -786,7 +835,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
             {coachOpen && snapshot && guideStageFor(snapshot) && (
               <StageHelpCoach snapshot={snapshot} onClose={dismissCoach} />
             )}
-            {!waitingRoom && <div className="movement-controls"><span className="movement-label">{snapshot?.self.caught ? "발견됨" : snapshot?.self.locked ? "위치 고정 중" : "이동"}</span><TouchPad setKey={setTouchKey} disabled={status !== "connected" || !(snapshot?.phase === "HIDING" || snapshot?.phase === "SEEKING") || Boolean(snapshot?.self.locked || snapshot?.self.caught)} /></div>}
+            {!waitingRoom && <div className="movement-controls"><TouchJoystick onMove={setJoystickMovement} onStart={beginJoystickMovement} resetKey={joystickResetKey} disabled={status !== "connected" || !(snapshot?.phase === "HIDING" || snapshot?.phase === "SEEKING") || Boolean(snapshot?.self.locked || snapshot?.self.caught)} /><span className="movement-label">{snapshot?.self.caught ? "발견됨" : snapshot?.self.locked ? "위치 고정 중" : "밀어서 이동"}</span></div>}
           </div>
           <div className="game-controls-bar" aria-label="게임 조작">
             <fieldset className="primary-game-actions" aria-label="역할 행동" disabled={status !== "connected"}><ActionButtons snapshot={snapshot} send={send} /></fieldset>
@@ -933,18 +982,18 @@ function ActionButtons({ snapshot, send }: { snapshot?: GameSnapshot; send: (typ
     return (
       <div className="action-buttons">
         <div className="action-item">
-          <button type="button" aria-keyshortcuts="1" aria-pressed={snapshot.self.locked} onClick={() => send("lock", !snapshot.self.locked)}><span>◆</span><kbd className="action-shortcut" aria-hidden="true">1</kbd><strong>{snapshot.self.locked ? "고정 해제" : "위치 고정"}</strong><small>{snapshot.self.locked ? "해제해야 다시 움직일 수 있어요" : "이동키를 눌러도 움직이지 않아요"}</small></button>
+          <TouchActionButton type="button" aria-keyshortcuts="1" aria-pressed={snapshot.self.locked} onAction={() => send("lock", !snapshot.self.locked)}><span>◆</span><kbd className="action-shortcut" aria-hidden="true">1</kbd><strong>{snapshot.self.locked ? "고정 해제" : "위치 고정"}</strong><small>{snapshot.self.locked ? "해제해야 다시 움직일 수 있어요" : "이동키를 눌러도 움직이지 않아요"}</small></TouchActionButton>
           <HelpTooltip label="위치 고정" copy="움직임을 멈춰 눈에 덜 띄게 숨어요. 다시 움직이려면 ‘고정 해제’를 눌러 주세요. 수색 시간에는 미션 구역에서 2초 동안 고정하면 점수를 얻어요." />
         </div>
         <div className="action-item">
-          <button type="button" aria-keyshortcuts="2" disabled={!snapshot.self.swapAvailable} onClick={() => send("swap", true)}><span>⇄</span><kbd className="action-shortcut" aria-hidden="true">2</kbd><strong>{snapshot.self.swapAvailable ? "자리바꿈" : "사용 완료"}</strong><small>{snapshot.self.swapAvailable ? "맵 전체 같은 사물 중 한 곳 · 1회" : "다음 라운드에 다시 사용할 수 있어요"}</small></button>
+          <TouchActionButton type="button" aria-keyshortcuts="2" disabled={!snapshot.self.swapAvailable} onAction={() => send("swap", true)}><span>⇄</span><kbd className="action-shortcut" aria-hidden="true">2</kbd><strong>{snapshot.self.swapAvailable ? "자리바꿈" : "사용 완료"}</strong><small>{snapshot.self.swapAvailable ? "맵 전체 같은 사물 중 한 곳 · 1회" : "다음 라운드에 다시 사용할 수 있어요"}</small></TouchActionButton>
           <HelpTooltip label="무작위 자리바꿈" copy="가게 안의 같은 종류 물건 중 하나와 무작위로 자리를 바꿔요. 라운드마다 한 번만 쓸 수 있어요. 들킬 것 같을 때 사용해 보세요." />
         </div>
         {snapshot.self.taunt && <div className="action-item taunt-action">
-          <button type="button" aria-keyshortcuts="3" disabled={snapshot.phase !== "SEEKING" || !canTaunt(snapshot.self.taunt, snapshot.serverTime, snapshot.phaseEndsAt)} onClick={() => send("taunt", true)}>
+          <TouchActionButton type="button" aria-keyshortcuts="3" disabled={snapshot.phase !== "SEEKING" || !canTaunt(snapshot.self.taunt, snapshot.serverTime, snapshot.phaseEndsAt)} onAction={() => send("taunt", true)}>
             <span aria-hidden="true">!</span><kbd className="action-shortcut" aria-hidden="true">3</kbd><strong>{snapshot.self.taunt.resolvesAt > snapshot.serverTime ? `${Math.ceil((snapshot.self.taunt.resolvesAt - snapshot.serverTime) / 1_000)}초 더 버티기!` : "여기 있었지!"}</strong>
             <small>{snapshot.phase !== "SEEKING" ? "수색이 시작되면 도발할 수 있어요" : snapshot.self.taunt.remaining === 0 ? "이번 라운드 도발 사용 완료" : snapshot.self.taunt.readyAt > snapshot.serverTime ? `${Math.ceil((snapshot.self.taunt.readyAt - snapshot.serverTime) / 1_000)}초 후 · ${snapshot.self.taunt.remaining}번 남음` : `위치 공개 후 6초 생존 +${TAUNT_RULES.reward}점 · ${snapshot.self.taunt.remaining}번`}</small>
-          </button>
+          </TouchActionButton>
           <HelpTooltip label="도발" copy="‘나 여기 있어!’ 하고 위치를 알려요. 그 뒤 6초 동안 잡히지 않으면 20점! 도망가거나 자리를 바꿔도 돼요. 20초 간격으로, 라운드마다 2번 쓸 수 있어요. 잡히거나 연결이 끊기면 점수를 받지 못해요." />
         </div>}
         {snapshot.mission && <div className="mission-card action-with-help"><span>{snapshot.phase === "HIDING" ? "수색 시작 후 진열 미션" : "진열 미션"}</span><strong>{snapshot.mission.label}</strong><progress max={1} value={snapshot.mission.progress}>{Math.round(snapshot.mission.progress * 100)}%</progress><HelpTooltip label="진열 미션" copy="수색이 시작되면 표시된 곳에서 ‘위치 고정’을 누르고 2초 동안 기다려요. 25점을 받을 수 있어요. 술래가 가까이 있다면 무리하지 않아도 돼요." /></div>}
@@ -963,7 +1012,7 @@ function ActionButtons({ snapshot, send }: { snapshot?: GameSnapshot; send: (typ
   return (
     <div className="action-buttons">
       <div className="action-item">
-        <button type="button" aria-keyshortcuts="1" disabled={lensSeconds > 0} onClick={() => send("lens", true)}><span>⌾</span><kbd className="action-shortcut" aria-hidden="true">1</kbd><strong>관찰 렌즈</strong><small>{lensSeconds > 0 ? `${lensSeconds}초 뒤 충전` : "최근 움직임을 구역으로 표시"}</small></button>
+        <TouchActionButton type="button" aria-keyshortcuts="1" disabled={lensSeconds > 0} onAction={() => send("lens", true)}><span>⌾</span><kbd className="action-shortcut" aria-hidden="true">1</kbd><strong>관찰 렌즈</strong><small>{lensSeconds > 0 ? `${lensSeconds}초 뒤 충전` : "최근 움직임을 구역으로 표시"}</small></TouchActionButton>
         <HelpTooltip label="관찰 렌즈" copy="숨는 친구들이 최근 2초 동안 움직인 구역을 1.8초간 보여줘요. 어떤 물건인지는 직접 찾아야 해요. 한 번 쓰면 30초 뒤에 다시 쓸 수 있어요." />
       </div>
       <div className="action-item tag-action">
@@ -1054,28 +1103,6 @@ function StageHelpCoach({ snapshot, onClose }: { snapshot: GameSnapshot; onClose
       <ol>{guide.steps.map((step) => <li key={step}>{step}</li>)}</ol>
       <button type="button" className="coach-done" onClick={onClose}>이해했어요</button>
     </aside>
-  );
-}
-
-function TouchPad({ setKey, disabled }: { setKey: (key: string, active: boolean) => void; disabled: boolean }) {
-  const bind = (key: string) => ({
-    onPointerDown: (event: PointerEvent<HTMLButtonElement>) => {
-      if (event.pointerType === "mouse" && event.button !== 0) return;
-      event.preventDefault();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      setKey(key, true);
-    },
-    onPointerUp: () => setKey(key, false),
-    onPointerCancel: () => setKey(key, false),
-    onLostPointerCapture: () => setKey(key, false),
-  });
-  return (
-    <div className="touch-pad" aria-label={disabled ? "현재 이동할 수 없습니다" : "화면 이동키"}>
-      <button type="button" disabled={disabled} aria-label="위로 이동" {...bind("up")}><b>W</b><small>▲</small></button>
-      <button type="button" disabled={disabled} aria-label="왼쪽으로 이동" {...bind("left")}><b>A</b><small>◀</small></button>
-      <button type="button" disabled={disabled} aria-label="아래로 이동" {...bind("down")}><b>S</b><small>▼</small></button>
-      <button type="button" disabled={disabled} aria-label="오른쪽으로 이동" {...bind("right")}><b>D</b><small>▶</small></button>
-    </div>
   );
 }
 
@@ -1185,14 +1212,14 @@ function roleInstruction(snapshot?: GameSnapshot): string {
 function controlInstruction(snapshot?: GameSnapshot): string {
   if (snapshot?.phase === "FINAL") return "내 기록을 보고, 준비되면 한 판 더 시작해요.";
   if (snapshot?.phase === "RESULT") return "이번 라운드가 끝났어요. 곧 다음 역할을 알려드릴게요.";
-  if (!snapshot || snapshot.self.role === "SPECTATOR") return "게임이 시작되면 방향키나 화면 이동키로 움직여요.";
+  if (!snapshot || snapshot.self.role === "SPECTATOR") return "게임이 시작되면 방향키나 원형 조이스틱으로 움직여요.";
   if (snapshot.self.caught) return "이제 움직일 수는 없지만, 팀 신호로 친구들을 도울 수 있어요.";
   if (snapshot.self.role === "HIDER") return snapshot.self.locked
     ? "위치 고정 중 · 숫자 1 또는 ‘고정 해제’로 다시 움직여요."
-    : "이동: WASD / 방향키 / 화면 WASD · 숫자 1 고정 · 2 자리바꿈 · 3 여기 있었지!";
+    : "이동: WASD / 방향키 / 조이스틱 · 숫자 1 고정 · 2 자리바꿈 · 3 여기 있었지!";
   return snapshot.phase === "HIDING"
     ? "기준 배치 확인: WASD / 방향키 · 마우스 드래그 · 휠 확대/축소"
-    : "이동: WASD / 방향키 / 화면 WASD · 숫자 1 관찰 렌즈 · 가까운 사물을 클릭·터치해 확인";
+    : "이동: WASD / 방향키 / 조이스틱 · 숫자 1 관찰 렌즈 · 가까운 사물을 클릭·터치해 확인";
 }
 
 function guideStageFor(snapshot: GameSnapshot): GuideStage | undefined {

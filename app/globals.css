@@ -626,12 +626,6 @@ button { color: inherit; }
 .ping-heading .help-tooltip { top: 0; right: 0; }
 .ping-panel > div:last-child { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 5px; }
 .ping-panel button { padding: 6px 8px; border: 1px solid #4c5571; border-radius: 8px; background: #2c314b; color: #d5daea; cursor: pointer; font-size: 8px; font-weight: 800; }
-.touch-pad { width: 120px; margin: 18px auto 0; display: grid; grid-template-columns: repeat(3, 38px); grid-template-rows: repeat(2, 38px); gap: 3px; }
-.touch-pad button { border: 1px solid #505870; border-radius: 9px; background: #30354f; color: #d8dceb; touch-action: none; user-select: none; }
-.touch-pad button:first-child { grid-column: 2; }
-.touch-pad button:nth-child(2) { grid-column: 1; grid-row: 2; }
-.touch-pad button:nth-child(3) { grid-column: 2; grid-row: 2; }
-.touch-pad button:last-child { grid-column: 3; grid-row: 2; }
 .keyboard-help { margin: 11px 0 0; color: #a9b1c5; font-size: 11px; line-height: 1.45; text-align: center; }
 .coach-card { width: min(350px, calc(100% - 28px)); padding: 15px; position: absolute; right: 14px; bottom: 14px; z-index: 9; border: 2px solid var(--yellow); border-radius: 17px; background: rgba(31,35,59,.97); box-shadow: 0 10px 30px rgba(0,0,0,.32); color: white; }
 .coach-card.coach-hider { border-color: var(--mint); }
@@ -674,7 +668,7 @@ button { color: inherit; }
   .player-list { grid-template-columns: repeat(2, 1fr); }
   .action-panel { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .role-card, .focus-card, .state-card { margin: 0; }
-  .ping-panel, .touch-pad, .keyboard-help { grid-column: 1 / -1; }
+  .ping-panel, .keyboard-help { grid-column: 1 / -1; }
 }
 
 @media (max-width: 560px) {
@@ -702,7 +696,7 @@ button { color: inherit; }
   .preview-ribbon { top: auto; bottom: 8px; max-width: calc(100% - 16px); width: max-content; }
   .player-list { grid-template-columns: 1fr; }
   .action-panel { grid-template-columns: 1fr; }
-  .ping-panel, .touch-pad, .keyboard-help { grid-column: auto; }
+  .ping-panel, .keyboard-help { grid-column: auto; }
   .visual-feed { grid-template-columns: 10px 1fr; }
   .event-alert { grid-column: 2; }
 }
@@ -863,9 +857,6 @@ button { color: inherit; }
 .game-controls-bar .tag-tip > span { display: none; }
 .movement-controls { padding: 8px; text-align: center; border: 1px solid #455671; border-radius: 12px; background: #19263e; }
 .movement-label { color: #dce6f6; font-size: .75rem; font-weight: 800; }
-.play-workspace .touch-pad { width: 138px; margin: 8px auto 0; grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(2, 44px); }
-.play-workspace .touch-pad button { font-size: 1.0625rem; background: #314662; border-color: #768bab; }
-.play-workspace .touch-pad button:disabled { opacity: .4; cursor: not-allowed; }
 .play-workspace .keyboard-help { margin-top: 8px; font-size: .75rem; }
 .play-workspace .visual-feed { margin: 0; grid-template-columns: 10px minmax(0, 1fr) minmax(180px, 1fr); min-height: 68px; }
 .play-workspace .visual-feed p { font-size: .875rem; line-height: 1.55; }
@@ -1009,7 +1000,6 @@ button { color: inherit; }
   .game-controls-bar .action-item > button small { font-size: .75rem; }
   .game-controls-bar .tag-tip { padding: 34px 10px 12px; }
   .movement-controls { display: flex; align-items: center; justify-content: center; gap: 16px; }
-  .movement-controls .touch-pad { margin: 0; flex: none; }
   .movement-controls .movement-label { max-width: 70px; line-height: 1.6; }
   .movement-controls .keyboard-help { max-width: 62px; margin: 0; line-height: 1.6; }
   .play-workspace .player-list { grid-template-columns: 1fr; }
@@ -1092,7 +1082,7 @@ button { color: inherit; }
 .guide-chapter-body figure img { display: block; width: 100%; height: auto; border: 1px solid var(--home-line); border-radius: 12px; }
 .guide-chapter-body figcaption { text-align: right; margin-top: 9px; color: #758071; font-size: 11px; }
 .guide-chapter-body ul { margin: 18px 0 0; padding-left: 20px; color: var(--home-muted); font-size: 14px; line-height: 1.9; }
-.guide-chapter-body .guide-phone-shot { width: min(100%, 390px); margin-inline: auto; }
+.guide-chapter-body .guide-phone-shot { width: 100%; margin-inline: auto; }
 .guide-extra { margin-top: 45px; }
 .guide-extra > h2 { font-size: 22px; margin-bottom: 20px; }
 .guide-extra details { border-bottom: 1px solid var(--home-line); }
@@ -1173,9 +1163,8 @@ button { color: inherit; }
 .play-workspace.is-playing .visual-feed p { margin: 0; font-size: 14px; line-height: 1.4; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .play-workspace.is-playing .visual-feed small { display: none; }
 .play-workspace.is-playing .visual-feed .event-alert { padding: 0 0 0 8px; grid-column: auto; }
-.canvas-frame .movement-controls { position: absolute; z-index: 15; bottom: 10px; left: 10px; padding: 6px; display: block; border-color: #8094b3; background: #16243de6; box-shadow: 0 4px 16px #0006; }
+.canvas-frame .movement-controls { position: absolute; z-index: 15; bottom: 12px; left: 18px; padding: 0; display: block; border: 0; background: transparent; box-shadow: none; }
 .canvas-frame .movement-label { display: block; font-size: 12px; }
-.canvas-frame .touch-pad { margin: 4px 0 0; }
 @media (min-width: 701px) and (pointer: fine) { .canvas-frame .movement-controls { display: none; } }
 @media (max-width: 700px) {
   .play-workspace .play-header { padding: 6px 8px; gap: 6px; grid-template-columns: auto 1fr auto; min-height: 58px; }
@@ -1211,10 +1200,6 @@ button { color: inherit; }
 /* 숫자 단축키와 접는 휴대폰의 세로·가로 화면 */
 .action-shortcut { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 23px; height: 25px; display: grid; place-items: center; border: 1px solid #94adc9; border-radius: 5px; color: #eaf2ff; background: #17273e; font-size: 14px; box-shadow: 0 2px 0 #0a1527; }
 .play-workspace.is-playing .action-item > button:has(.action-shortcut) { padding-left: 44px; }
-.touch-pad button { -webkit-touch-callout: none; }
-.play-workspace .touch-pad button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; }
-.touch-pad b { font-size: 16px; line-height: 1; }
-.touch-pad small { font-size: 9px; line-height: 1; opacity: .65; }
 .play-workspace.is-playing .action-item:first-child .help-tooltip > div { left: 0; right: auto; }
 @media (pointer: coarse), (max-width: 700px) {
   .action-shortcut { display: none; }
@@ -1252,10 +1237,62 @@ button { color: inherit; }
   .play-workspace.is-playing .action-buttons { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
   .play-workspace.is-playing .action-buttons:has(.tag-tip) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .play-workspace.is-playing .taunt-action { grid-column: auto; }
-  .canvas-frame .movement-controls { bottom: 5px; left: 5px; padding: 4px; }
+  .canvas-frame .movement-controls { bottom: 10px; left: 16px; padding: 0; }
   .canvas-frame .movement-label { display: none; }
-  .canvas-frame .touch-pad { margin-top: 0; }
   .play-objective-details { max-height: 58dvh; overflow-y: auto; }
   .coach-card { max-height: 90%; overflow-y: auto; }
   .play-workspace.is-playing .action-empty.preview-actions { min-height: 36px; padding-block: 5px; }
+}
+
+/* 한 손가락으로 방향과 속도를 이어서 조절하는 아날로그 패드. */
+.touch-joystick { position: relative; width: clamp(118px, 36dvh, 152px); aspect-ratio: 1; border-radius: 50%; border: 2px solid #b8dfdd88; background: radial-gradient(circle, #60868533 0 26%, #19384699 27% 67%, #c2eecc22 68%); box-shadow: inset 0 0 0 7px #19364755, 0 4px 18px #0005; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.joystick-track { position: absolute; inset: 15%; border: 1px dashed #d6f3ce55; border-radius: 50%; pointer-events: none; }
+.joystick-thumb { position: absolute; left: 32%; top: 32%; width: 36%; height: 36%; display: grid; place-items: center; border-radius: 50%; border: 2px solid #eaffd8cc; background: radial-gradient(circle at 35% 25%, #e1f5bc, #9dcc9c 60%, #699b8c); box-shadow: 0 4px 10px #081c3688, inset 0 2px 1px #ffffffaa; pointer-events: none; will-change: transform; }
+.joystick-thumb > span { width: 24%; height: 24%; border: 2px solid #47736588; border-radius: 50%; }
+.touch-joystick[data-active="true"] { border-color: #d4f5bc; background-color: #476e6544; }
+.touch-joystick[aria-disabled="true"] { opacity: .35; }
+.action-item > button { touch-action: none; }
+.touch-joystick:not([data-active="true"]) .joystick-thumb { transition: transform 90ms ease-out; }
+.canvas-frame .movement-label { margin-top: 5px; color: #e2edd9; text-shadow: 0 1px 3px #000; }
+.canvas-frame:has(.role-reveal-overlay, .result-overlay) .movement-controls { visibility: hidden; pointer-events: none; }
+.rotate-screen { position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 22px; padding: 30px; background: #14243b; color: #eef4da; text-align: center; }
+.rotate-screen strong { font-size: 22px; line-height: 1.5; }
+.rotate-screen p { margin: 0; color: #c4d4ce; font-size: 16px; line-height: 1.8; }
+.rotate-phone { display: grid; place-items: center; width: 108px; height: 64px; border: 3px solid #c6e89d; border-radius: 15px; color: #c6e89d; font-size: 40px; }
+.landscape-content[inert] { height: 100dvh; overflow: hidden; }
+
+@media (orientation: landscape) and (max-height: 500px) {
+  .home-header, .night-entry .game-topbar { height: 48px; }
+  .home-hero { grid-template-columns: 1.1fr 1fr; padding-block: 18px; gap: 28px; }
+  .home-kicker { margin-bottom: 7px; }
+  .home-intro h1 { font-size: 32px; }
+  .home-description { margin-block: 10px; font-size: 14px; line-height: 1.6; }
+  .home-button { min-height: 44px; padding: 8px 16px; }
+  .home-art img { height: 200px; }
+  .home-art figcaption, .home-small-note { display: none; }
+  .night-entry .join-layout { display: block; min-height: 0; width: min(850px, calc(100% - 32px)); padding-block: 12px; }
+  .night-entry .join-intro { display: none; }
+  .night-entry .join-card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 24px; padding: 14px 20px; }
+  .entry-card-heading { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; margin: 0; }
+  .night-entry .entry-card-heading h1 { font-size: 22px; margin: 0; }
+  .entry-card-heading .eyebrow { display: none; }
+  .night-entry .entry-card-heading > p:last-child { font-size: 14px; }
+  .night-entry .join-mode-selector { grid-column: 1 / -1; margin: 0; }
+  .night-entry .join-mode-selector button { min-height: 44px; }
+  .night-entry .join-card > .field-label { grid-column: 1; grid-row: 3; align-self: end; margin: 0; }
+  .night-entry .join-card > .text-input { grid-column: 1; grid-row: 4; align-self: start; min-height: 44px; }
+  .night-entry .unified-modes, .night-entry .invite-found { grid-column: 2; grid-row: 3 / span 3; margin: 0; }
+  .night-entry .solo-start-card { gap: 7px; }
+  .night-entry .solo-start-card strong { font-size: 14px; }
+  .night-entry .solo-start-card small { display: none; }
+  .night-entry .solo-start-card > button { margin-top: 0; min-height: 44px; }
+  .night-entry .join-safety { grid-column: 1; grid-row: 5; margin: 0; align-self: start; font-size: 12px; }
+  .night-entry .invite-join, .night-entry .notice-card { grid-column: 1 / -1; }
+  .play-workspace .role-reveal-overlay { display: grid; grid-template-columns: 1fr 1fr; align-content: center; justify-items: center; gap: 6px 20px; padding: 14px 20px; text-align: center; }
+  .play-workspace .role-reveal-overlay > strong { grid-column: 1; font-size: 22px; }
+  .play-workspace .role-reveal-kicker, .play-workspace .role-reveal-alias, .play-workspace .role-reveal-goal { grid-column: 1; margin: 0; }
+  .play-workspace .role-reveal-overlay ol { grid-column: 2; grid-row: 1 / span 4; width: 100%; margin: 0; font-size: 14px; line-height: 1.6; padding: 10px 12px 10px 28px; }
+  .play-workspace .role-reveal-footer { grid-column: 1 / -1; }
+  .play-workspace .role-reveal-overlay .role-reveal-symbol { display: none; }
+  .play-workspace.is-playing .mission-card .help-tooltip summary { top: 50%; transform: translateY(-50%); width: 23px; height: 23px; }
 }
