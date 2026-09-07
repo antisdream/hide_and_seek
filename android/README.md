@@ -51,11 +51,27 @@ USB reverse는 PC의 IPv4 loopback에 연결하므로 웹 서버를 `127.0.0.1`�
 
 - WebView 안에서는 `http://localhost:3100`과 `http://127.0.0.1:3100` 페이지만 열린다. 사용자가 누른 외부 HTTPS 링크는 브라우저로 전달한다.
 - 평문 HTTP/WS는 `localhost`와 `127.0.0.1`에만 허용한다. JavaScript·DOM storage를 켜고 파일·콘텐츠 접근, 혼합 콘텐츠, JavaScript 인터페이스는 허용하지 않는다.
-- Android 16의 edge-to-edge 정책에 맞춰 root에 실제 상태 표시줄·내비게이션·화면 cutout·키보드 여백을 적용한다. 회전·폴딩 시 WebView를 유지하고 남은 영역으로 다시 배치한다.
+- Android 16의 edge-to-edge 정책에 맞춰 root에 실제 상태 표시줄·내비게이션·화면 cutout·키보드 여백을 적용한다. 회전·폴딩 시 WebView를 유지하고 남은 영역으로 다시 배치하도록 구성했다.
 - Android 13 이상은 `OnBackInvokedDispatcher`, 이전 버전은 `onBackPressed`로 웹 기록을 돌아간다. 돌아갈 기록이 없으면 앱을 닫는다.
 - 메인 페이지 연결 실패 시 네이티브 재시도 화면을 표시한다. 자동 재시도 타이머나 페이지에 주입하는 보정 코드는 없다.
-- 빌드·lint 성공은 기기 플레이 검증과 구분한다. 실제 기기에서는 화면 여백, 키보드, 터치 이동·행동 버튼, 뒤로 가기, 앱 전환 후 복귀, USB 연결 끊김·재연결을 별도로 확인한다.
+- 빌드·lint 성공과 실제 기기 플레이 검증은 아래처럼 구분한다.
 
 런처 아이콘은 제공된 1254×1254 모루 이미지 원본을 그대로 사용하고 adaptive·round·legacy 아이콘을 함께 선언했다. Adaptive foreground는 XML에서 각 방향에 5% 여백을 두어 원본을 90% 크기로 표시하고, 마스크가 달라져도 모자·귀가 안전 영역에 들어가도록 했다. Legacy bitmap은 원본 비율을 유지한다. Wrapper 기반 파일은 같은 작업공간의 `CueFlowSubscription`에서 복사했으며 다른 앱 소스나 서명 자료는 가져오지 않았다. Windows wrapper 복사본은 Java 실행 실패 코드를 호출자에게 전달하도록 보완했다.
 
 구현 참고: [Android WebView](https://developer.android.com/develop/ui/views/layout/webapps/webview), [WindowInsets](https://developer.android.com/reference/android/view/WindowInsets), [OnBackInvokedDispatcher](https://developer.android.com/reference/android/window/OnBackInvokedDispatcher), [Network security configuration](https://developer.android.com/privacy-and-security/security-config).
+
+## 실제 확인한 범위
+
+2026-09-07의 `0.019-test` APK를 Galaxy Z Flip4(SM-F721N, Android 16/API 36)에 설치해 PC 서버와 USB 연결로 확인했다.
+
+| 구분 | 확인 결과 |
+|---|---|
+| 빌드 | `assembleDebug`·`lintDebug` 성공. lint 오류 0·경고 8, 서명·정렬 검사 통과 |
+| 입장 | 랜딩, 별명 입력과 키보드 닫기, 난이도 선택, AI 게임 입장 |
+| 숨는 팀 조작 | 화면 WASD 이동, 고정·해제와 이동 버튼 비활성화, 자리바꿈 사용 완료, 도발 생존 카운트다운 |
+| 화면·탐색 | 상태·내비게이션 영역의 여백, 세로·가로 화면의 조작부, Android 뒤로 가기로 랜딩 복귀 |
+| 연결 재시도 | PC의 IPv4 바인딩을 수정한 뒤 앱의 재시도 버튼으로 정상 접속 |
+
+술래 렌즈의 실제 실행과 모바일 배치는 웹 브라우저에서 확인했다. 실기기 폴딩·커버 화면, 동시 멀티터치, 앱 전환 후 복귀, USB를 분리했다 다시 연결하는 상황, 여러 기기·외부망·장시간 플레이는 추가 검증이 필요하다.
+
+현재 lint 경고는 SDK·Gradle 새 버전 권고, 하위 API에서 무시되는 속성, annotation·리소스 구성 권고와 monochrome 아이콘 미제공에 관한 것이다. 앱은 개발용 debug APK이며, 스토어 배포 검증은 포함하지 않는다.
