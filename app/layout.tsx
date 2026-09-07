@@ -6,8 +6,8 @@ const metadataBase = process.env.NEXT_PUBLIC_SITE_URL?.trim() || "http://localho
 
 export const metadata: Metadata = {
   metadataBase: new URL(metadataBase),
-  title: "눈숨 | 수상한 잡화점",
-  description: "사물의 어색함을 찾아내는 소리 없이도 즐길 수 있는 웹 멀티플레이 파티게임",
+  title: "눈숨 | 눈치 보며 숨바꼭질",
+  description: "물건 사이에 숨고, 숨어 있는 친구를 찾아봐요. 설치 없이 즐기는 무료 웹 숨바꼭질 게임이에요.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
@@ -15,14 +15,14 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     locale: "ko_KR",
-    title: "눈숨 | 가장 평범한 것이 가장 수상하다",
-    description: "별명 하나로 대기실에 입장하는 소리 없이도 즐길 수 있는 웹 멀티플레이 사물 숨바꼭질",
+    title: "눈숨 | 눈치 보며 숨바꼭질",
+    description: "혼자라면 AI와, 친구와는 초대 링크로 함께해요. 마이크 없이도 즐거운 숨바꼭질.",
     images: [{ url: "/og.png", width: 1731, height: 909, alt: "밤의 잡화점에서 문구류 정령을 찾는 밤지기 모루" }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "눈숨 | 수상한 잡화점",
-    description: "소리 없이도 즐길 수 있는 웹 멀티플레이 사물 숨바꼭질",
+    title: "눈숨 | 눈치 보며 숨바꼭질",
+    description: "혼자 또는 친구들과, 마이크 없이 즐기는 무료 웹 숨바꼭질.",
     images: ["/og.png"],
   },
 };

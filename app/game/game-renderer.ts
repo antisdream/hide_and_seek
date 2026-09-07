@@ -923,7 +923,7 @@ export async function mountGameRenderer(
       container.add(face);
 
       if (entity.controlled || entity.teammate) {
-        container.add(this.add.text(0, -34, entity.controlled ? "나" : "짝", {
+        container.add(this.add.text(0, -34, entity.controlled ? "나" : "같은 팀", {
           color: "#25213a",
           backgroundColor: entity.controlled ? "#ffd76a" : "#63d6b5",
           fontFamily: "Pretendard, sans-serif",
@@ -1051,7 +1051,7 @@ export async function mountGameRenderer(
       ring.lineStyle(4, 0x9cb0ff, 0.9);
       ring.strokeCircle(0, 0, 28);
       ring.strokeCircle(0, 0, 38);
-      const label = this.add.text(0, -46, pingLabel(ping.kind), {
+      const label = this.add.text(0, -46, pingLabel(ping.kind, this.snapshot?.self.role), {
         color: "#25213a",
         backgroundColor: "#9cb0ff",
         fontFamily: "Pretendard, sans-serif",
@@ -1183,12 +1183,12 @@ function effectColor(type: GameEffect["type"]): number {
   } satisfies Record<GameEffect["type"], number>)[type];
 }
 
-function pingLabel(kind: TeamPing["kind"]): string {
+function pingLabel(kind: TeamPing["kind"], role?: GameSnapshot["self"]["role"]): string {
   return {
     check: "여기 확인",
     suspect: "수상해요",
-    done: "확인 완료",
+    done: role === "HIDER" ? "미션 완료" : "확인 완료",
     danger: "술래 조심",
-    moving: "움직임 발견",
+    moving: "이동할게요",
   }[kind];
 }

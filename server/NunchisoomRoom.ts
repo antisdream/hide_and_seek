@@ -236,13 +236,13 @@ export class NunchisoomRoom extends Room {
 
   onJoin(client: Client): void {
     if (this.phase !== "LOBBY" && this.phase !== "FINAL") {
-      throw new ServerError(4_213, "진행 중인 경기에는 새로 입장할 수 없습니다.");
+      throw new ServerError(4_213, "이미 시작한 게임이에요. 다음 판에 함께해 주세요.");
     }
     if (this.publicHostIsUnavailable()) {
-      throw new ServerError(4_215, "방장이 재연결 중입니다. 잠시 후 다시 시도해 주세요.");
+      throw new ServerError(4_215, "방장이 다시 연결하는 중이에요. 잠시 뒤 다시 시도해 주세요.");
     }
     if (this.players.size >= this.rules.maxPlayers) {
-      throw new ServerError(4_214, "방이 가득 찼습니다. 다른 방을 이용해 주세요.");
+      throw new ServerError(4_214, "방이 가득 찼어요. 다른 방으로 들어가 주세요.");
     }
     const auth = client.auth as AuthData;
     const player: InternalPlayer = {
@@ -292,7 +292,7 @@ export class NunchisoomRoom extends Room {
     this.version += 1;
     this.refreshMatchmaking();
     // 입장한 클라이언트는 메시지 수신기를 붙이기 전이므로 기존 참가자에게만 알린다.
-    this.broadcast("notice", { label: `${player.displayName}님이 대기실에 들어왔습니다.` }, { except: client });
+    this.broadcast("notice", { label: `${player.displayName}님이 들어왔어요.` }, { except: client });
   }
 
   onDrop(client: Client): void {
@@ -306,7 +306,7 @@ export class NunchisoomRoom extends Room {
     if (this.phase === "COUNTDOWN") {
       this.cancelPreparedRound();
       this.setPhase("LOBBY", 0);
-      this.broadcast("notice", { label: "연결이 끊긴 참가자가 있어 시작 준비를 취소했습니다." });
+      this.broadcast("notice", { label: "연결이 끊긴 친구가 있어요. 모두 돌아오면 다시 준비해 주세요." });
     } else {
       // 공개방 방장이 재연결 중이면 목록에서 잠가 새 참가자가 관리 불가능한 방에 들어오지 않게 한다.
       this.refreshMatchmaking();
@@ -337,12 +337,12 @@ export class NunchisoomRoom extends Room {
     this.preparedSeekerIds.delete(player.id);
     if (player.id === this.hostPlayerId) this.migrateHost();
     this.version += 1;
-    this.broadcast("notice", { label: `${player.displayName}님이 방을 나갔습니다.` });
+    this.broadcast("notice", { label: `${player.displayName}님이 나갔어요.` });
 
     if (this.phase === "COUNTDOWN") {
       this.cancelPreparedRound();
       this.setPhase("LOBBY", 0);
-      this.broadcast("notice", { label: "참가자가 나가 시작 준비를 취소했습니다." });
+      this.broadcast("notice", { label: "친구가 나갔어요. 인원을 확인하고 다시 준비해 주세요." });
     } else {
       this.refreshMatchmaking();
     }
@@ -384,7 +384,7 @@ export class NunchisoomRoom extends Room {
     if (this.phase === "HIDING") {
       this.seekingStartedAt = now;
       this.setPhase("SEEKING", now + this.roundSeekingMs);
-      this.broadcastEffect({ type: "phase", label: `${this.generatedMap.layout.name} 수색이 시작됐습니다.` });
+      this.broadcastEffect({ type: "phase", label: `${this.generatedMap.layout.name} 이제 숨은 친구들을 찾아요!` });
       return;
     }
     if (this.phase === "SEEKING") {
@@ -418,7 +418,7 @@ export class NunchisoomRoom extends Room {
       return;
     }
     if (!this.humanPlayers().every((entry) => entry.ready)) {
-      this.sendError(client, "준비 확인", "모든 참가자가 준비해야 시작할 수 있습니다.");
+      this.sendError(client, "준비 확인", "모두 ‘준비 완료’를 누르면 시작할 수 있어요.");
       return;
     }
     this.beginCountdown(this.phase === "FINAL");
@@ -442,7 +442,7 @@ export class NunchisoomRoom extends Room {
     this.broadcast("chat:clear", true);
     this.prepareRound();
     this.setPhase("COUNTDOWN", Date.now() + this.rules.countdownMs);
-    this.broadcastEffect({ type: "phase", label: `${this.round}라운드 역할이 정해졌습니다.` });
+    this.broadcastEffect({ type: "phase", label: `${this.round}라운드, 내 역할을 확인해요.` });
   }
 
   /** 역할 공개 전에 맵과 역할을 확정하되, 다른 이용자의 위치는 스냅샷에서 숨긴다. */
@@ -577,7 +577,7 @@ export class NunchisoomRoom extends Room {
     this.result = {
       winner,
       reason,
-      headline: winner === "SEEKERS" ? "모든 틈새정령을 찾았습니다!" : "평범한 척 끝까지 살아남았습니다!",
+      headline: winner === "SEEKERS" ? "숨어 있던 친구들을 모두 찾았어요!" : "끝까지 잘 숨었어요!",
     };
 
     for (const player of this.players.values()) {
@@ -617,7 +617,7 @@ export class NunchisoomRoom extends Room {
         score: player.score,
       })),
     });
-    this.broadcast("notice", { label: "경기 기록을 저장했습니다. 다시 준비하면 재경기가 시작됩니다." });
+    this.broadcast("notice", { label: "이번 경기가 끝났어요. 모두 준비하면 방장이 한 판 더 시작할 수 있어요." });
   }
 
   private updatePlayers(deltaTime: number, now: number): void {
@@ -977,7 +977,7 @@ export class NunchisoomRoom extends Room {
     if (!player || player.role !== "HIDER" || player.caught || player.swapUsed) return;
     if (this.phase !== "HIDING" && this.phase !== "SEEKING") return;
     if (this.performSwap(player)) return;
-    this.sendError(client, "자리바꿈 실패", "맵에 교체 가능한 같은 종류의 사물이 없습니다.");
+    this.sendError(client, "자리바꿈 실패", "지금은 자리를 바꿀 같은 종류의 물건이 없어요.");
   }
 
   private performSwap(player: InternalPlayer): boolean {
@@ -1001,14 +1001,14 @@ export class NunchisoomRoom extends Room {
       type: "swap" as const,
       x: player.x,
       y: player.y,
-      label: "종이조각 사이로 두 사물이 바뀌었습니다.",
+      label: "다른 물건과 자리를 바꿨어요.",
     };
     // 관찰자에게 목적지 좌표가 담긴 효과를 보내면 전역 자리바꿈의 은신 의미가 사라진다.
     this.broadcastEffect(swapEffect, "HIDER");
     if (this.phase === "SEEKING") {
       this.broadcastEffect({
         type: "swap",
-        label: "어딘가에서 같은 사물 둘이 뒤바뀌었습니다.",
+        label: "어딘가에서 물건 두 개가 자리를 바꿨어요.",
       }, "SEEKER");
     }
     return true;
@@ -1039,11 +1039,11 @@ export class NunchisoomRoom extends Room {
     const targetProp = this.staticProps.find((prop) => prop.id === entityId);
     const target = targetHider ?? targetProp;
     if (!target || distance(seeker, target) > this.rules.tagDistance) {
-      if (client) this.sendError(client, "태그 범위", "스티커를 붙이려면 사물에 조금 더 가까이 가야 합니다.");
+      if (client) this.sendError(client, "조금 더 가까이 가 주세요", "물건에 가까이 다가간 뒤 눌러 주세요.");
       return false;
     }
     if (!hasLineOfSight(seeker, target, this.generatedMap.layout)) {
-      if (client) this.sendError(client, "시야 가림", "선반 너머의 사물에는 스티커를 붙일 수 없습니다.");
+      if (client) this.sendError(client, "시야 가림", "선반에 가려져 있어요. 잘 보이는 쪽으로 움직여 주세요.");
       return false;
     }
 
@@ -1057,7 +1057,7 @@ export class NunchisoomRoom extends Room {
       seeker.score += 80;
       seeker.tagReadyAt = now + tagCooldown(seeker.focus, true, this.rules);
       this.addReplay("tag", `${seeker.displayName} 님이 ${targetHider.displayName} 님을 찾아냈습니다.`);
-      this.broadcastEffect({ type: "correct-tag", x: targetHider.x, y: targetHider.y, label: "정확한 확인 스티커!" });
+      this.broadcastEffect({ type: "correct-tag", x: targetHider.x, y: targetHider.y, label: "찾았다!" });
       this.checkAllCaught();
       return true;
     } else {
@@ -1069,7 +1069,7 @@ export class NunchisoomRoom extends Room {
         type: seeker.focus <= 0 ? "focus-empty" : "wrong-tag",
         x: target.x,
         y: target.y,
-        label: seeker.focus <= 0 ? "집중력 소진 — 잠시 관찰만 가능" : "평범한 사물입니다.",
+        label: seeker.focus <= 0 ? "집중력을 다 썼어요 · 잠깐 쉬어요" : "앗, 그냥 물건이었네요.",
       } satisfies GameEffect;
       if (client) client.send("effect", effect);
       else this.broadcast("effect", effect);
@@ -1120,7 +1120,7 @@ export class NunchisoomRoom extends Room {
     const now = Date.now();
     if (!seeker || seeker.role !== "SEEKER" || this.phase !== "SEEKING") return;
     if (now < seeker.lensReadyAt) {
-      this.sendError(client, "렌즈 충전 중", "관찰 렌즈가 아직 충전되지 않았습니다.");
+      this.sendError(client, "렌즈 충전 중", "렌즈가 아직 충전 중이에요. 조금만 기다려 주세요.");
       return;
     }
     seeker.lensReadyAt = now + this.rules.lensCooldownMs;
@@ -1359,7 +1359,7 @@ export class NunchisoomRoom extends Room {
   private handleAddBot(client: Client, difficulty: AiDifficulty): void {
     const host = this.playerFor(client);
     if (!host || host.id !== this.hostPlayerId) {
-      this.sendError(client, "방장 권한 필요", "AI 참가자는 방장만 추가할 수 있습니다.");
+      this.sendError(client, "방장 권한 필요", "AI 친구는 방장만 불러올 수 있어요.");
       return;
     }
     if (this.phase !== "LOBBY" && this.phase !== "FINAL") {
@@ -1419,14 +1419,14 @@ export class NunchisoomRoom extends Room {
     this.players.set(bot.id, bot);
     this.version += 1;
     this.refreshMatchmaking();
-    this.broadcast("notice", { label: `${displayName} · ${aiDifficultyKorean(difficulty)} AI가 참가했습니다.` });
+    this.broadcast("notice", { label: `${displayName} · ${aiDifficultyKorean(difficulty)} AI가 들어왔어요.` });
   }
 
   /** 방장이 선택한 AI 한 명만 제거하며 사람 참가자는 이 기능으로 내보낼 수 없다. */
   private handleRemoveBot(client: Client, botId: string): void {
     const host = this.playerFor(client);
     if (!host || host.id !== this.hostPlayerId) {
-      this.sendError(client, "방장 권한 필요", "AI 참가자는 방장만 내보낼 수 있습니다.");
+      this.sendError(client, "방장 권한 필요", "AI 친구는 방장만 내보낼 수 있어요.");
       return;
     }
     if (this.phase !== "LOBBY" && this.phase !== "FINAL") {
@@ -1444,7 +1444,7 @@ export class NunchisoomRoom extends Room {
     this.preparedSeekerIds.delete(bot.id);
     this.version += 1;
     this.refreshMatchmaking();
-    this.broadcast("notice", { label: `${bot.displayName} AI가 대기실에서 나갔습니다.` });
+    this.broadcast("notice", { label: `${bot.displayName} AI가 나갔어요.` });
   }
 
   /** 채팅 발신자 정보는 서버가 붙여 이름 사칭과 임의 ID 전송을 막는다. */
@@ -1452,7 +1452,7 @@ export class NunchisoomRoom extends Room {
     const player = this.playerFor(client);
     if (!player || player.bot) return;
     if (this.phase !== "LOBBY" && this.phase !== "FINAL") {
-      this.sendError(client, "대기실 채팅", "채팅은 경기가 시작되기 전이나 종료된 뒤에 이용할 수 있습니다.");
+      this.sendError(client, "대기실 채팅", "채팅은 게임 시작 전이나 끝난 뒤에 할 수 있어요. 지금은 팀 신호를 써보세요.");
       return;
     }
     const text = sanitizeChatText(rawText);

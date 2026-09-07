@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { ColyseusSDK, type Room } from "@colyseus/sdk";
 import type {
   AiDifficulty,
@@ -240,7 +241,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
         setNotice({
           id: createClientId(),
           title: "위치 고정 중",
-          label: "오른쪽 행동 패널에서 ‘고정 해제’를 눌러야 다시 움직일 수 있어요.",
+          label: "‘고정 해제’를 누르면 다시 움직일 수 있어요.",
         });
         return;
       }
@@ -312,7 +313,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
 
     setStatus("connecting");
     const connectionGeneration = ++connectionGenerationRef.current;
-    setNotice({ id: createClientId(), label: "게임방에 연결하는 중입니다…" });
+    setNotice({ id: createClientId(), label: "게임에 들어가고 있어요…" });
     writeClientPreference("nunchisoom-display-name", normalizedName);
     try {
       const gameEndpoint = resolveGameServerEndpoint(window.location.href, CONFIGURED_GAME_ENDPOINT);
@@ -382,11 +383,12 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
         if (roomRef.current !== joinedRoom) { leaveGameRoom(joinedRoom); return; }
         setStatus("connected");
         joinedRoom.send("chat:sync", true);
-        setNotice({ id: createClientId(), label: "게임방에 다시 연결되었습니다.", tone: "success" });
+        setNotice({ id: createClientId(), label: "다시 연결됐어요. 이어서 즐겨요!", tone: "success" });
       });
-      joinedRoom.onError((_code, message) => {
+      joinedRoom.onError((code, message) => {
         if (roomRef.current !== joinedRoom) return;
-        setNotice({ id: createClientId(), title: "연결 오류", label: message || "게임 서버 연결을 확인해 주세요.", tone: "error" });
+        console.warn("[눈숨 연결 오류]", { code, message });
+        setNotice({ id: createClientId(), title: "연결이 원활하지 않아요", label: readableError(new Error(`${code} ${message ?? ""}`)), tone: "error" });
       });
       joinedRoom.onLeave((code, reason) => {
         if (roomRef.current === joinedRoom) {
@@ -414,7 +416,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
           setInviteCodeInput("");
           setNotice({
             id: createClientId(), title: "게임 연결이 종료됐어요",
-            label: "서버 연결을 유지하지 못했습니다. 다시 입장해 주세요.", tone: "error",
+            label: "연결이 끊겼어요. 잠시 뒤 다시 들어와 주세요.", tone: "error",
           });
           window.history.replaceState({}, "", "/game");
         }
@@ -423,7 +425,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       roomRef.current = joinedRoom;
       setRoom(joinedRoom);
       setStatus("connected");
-      setNotice({ id: createClientId(), label: "대기실에 입장했습니다.", tone: "success" });
+      setNotice({ id: createClientId(), label: "대기실에 들어왔어요.", tone: "success" });
       sequenceRef.current = 0;
       lastSentMovementRef.current = { x: 0, y: 0 };
       joinedRoom.send("chat:sync", true);
@@ -446,7 +448,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       setStatus("idle");
       setNotice({
         id: createClientId(),
-        title: "입장하지 못했습니다",
+        title: "방에 들어가지 못했어요",
         label: readableError(error),
         tone: "error",
       });
@@ -509,7 +511,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
     const inviteUrl = createInviteUrl(window.location.href, room.roomId);
     const copied = await copyTextToClipboard(inviteUrl);
     setNotice(copied
-      ? { id: createClientId(), label: "초대 링크를 복사했습니다.", tone: "success" }
+      ? { id: createClientId(), label: "초대 링크를 복사했어요. 친구에게 보내 주세요!", tone: "success" }
       : { id: createClientId(), label: `초대 링크를 직접 복사하세요: ${inviteUrl}`, tone: "normal" });
   }, [room]);
 
@@ -521,7 +523,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       audioRef.current.snapshot(snapshotRef.current);
       const enabled = await audioRef.current.setEnabled(!soundEnabled);
       setSoundEnabled(enabled);
-      if (!enabled && !soundEnabled) setNotice({ id: createClientId(), label: "이 브라우저에서 소리를 켜지 못했어요. 화면의 단서로 계속 플레이할 수 있습니다." });
+      if (!enabled && !soundEnabled) setNotice({ id: createClientId(), label: "이 브라우저에서 소리를 켜지 못했어요. 화면을 보면서 계속 즐길 수 있어요." });
     } catch {
       setSoundEnabled(false);
       setNotice({ id: createClientId(), label: "소리를 켜지 못했어요. 소리 버튼을 다시 눌러 주세요." });
@@ -536,7 +538,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
     const self = current.players.find((player) => player.id === current.self.playerId);
     const text = `눈숨 ${current.totalRounds}라운드 완주! ${self?.displayName ?? "나"} ${self?.score ?? 0}점 · 다음 판 함께해요\n${createInviteUrl(window.location.href, current.roomId)}`;
     const copied = await copyTextToClipboard(text);
-    setNotice({ id: createClientId(), label: copied ? "내 결과와 초대 링크를 복사했습니다." : `직접 복사해 주세요: ${text}`, tone: copied ? "success" : "normal" });
+    setNotice({ id: createClientId(), label: copied ? "내 결과와 초대 링크를 복사했어요. 친구에게 보내 주세요!" : `직접 복사해 주세요: ${text}`, tone: copied ? "success" : "normal" });
   };
 
   const setTouchKey = useCallback((key: string, active: boolean) => {
@@ -573,18 +575,18 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
 
         <section className="join-layout">
           <div className="join-intro">
-            <p className="eyebrow">한밤의 잡화점에 오신 걸 환영해요</p>
-            <h2>평범하게 숨고,<br /><em>예리하게 찾아요.</em></h2>
-            <p>이번엔 연필일까요, 노트일까요?<br />세 라운드의 숨바꼭질이 기다리고 있어요.</p>
-            <figure className="entry-art"><img src="/og.png" width={1731} height={909} alt="밤지기 모루와 잡화점 사물 정령들" /></figure>
-            <div className="entry-first-steps"><strong>처음이어도, 따라올 수 있어요.</strong><p>역할 안내 → 지금 할 일 → 경기 중 도움말.<br />모든 규칙을 외우고 시작할 필요는 없어요.</p><a href="/how-to-play">조작부터 살펴보기 →</a></div>
+            <p className="eyebrow">눈숨 · 눈치 보며 숨바꼭질</p>
+            <h2>물건 사이에<br /><em>쏙 숨어볼까요?</em></h2>
+            <p>혼자라면 AI와 먼저 해봐요.<br />친구와 함께라면 방을 만들고 초대해 주세요.</p>
+            <figure className="entry-art"><Image src="/og.png" width={1731} height={909} sizes="(max-width: 900px) 100vw, 480px" alt="문구점에서 친구들을 찾는 모루" /></figure>
+            <div className="entry-first-steps"><strong>처음이어도 괜찮아요.</strong><p>게임이 시작되면 내 역할을 알려드려요.<br />궁금할 때는 물음표를 눌러 보세요.</p><a href="/how-to-play">게임 방법 살펴보기 →</a></div>
           </div>
 
           <div className="join-card">
-            <div className="entry-card-heading"><p className="eyebrow">플레이 준비</p><h1>{inviteRoomId ? "초대받은 방으로 가볼까요." : "어떻게 시작할까요?"}</h1><p>{inviteRoomId ? "별명을 정하고 초대받은 방에 들어가세요." : "방식을 고르고 별명만 정하면 돼요."}</p></div>
+            <div className="entry-card-heading"><p className="eyebrow">플레이 준비</p><h1>{inviteRoomId ? "친구가 보낸 초대장이에요" : "어떻게 놀까요?"}</h1><p>{inviteRoomId ? "별명을 정하고 방에 들어가 보세요." : "같이 놀 방법을 고르고 별명을 정해 주세요."}</p></div>
             {!inviteRoomId && <div className="join-mode-selector" role="group" aria-label="플레이 방식">
-              <button type="button" aria-pressed={joinMode === "solo"} disabled={status === "connecting"} onClick={() => setJoinMode("solo")}>혼자 플레이</button>
-              <button type="button" aria-pressed={joinMode === "friends"} disabled={status === "connecting"} onClick={() => setJoinMode("friends")}>친구와 함께</button>
+              <button type="button" aria-pressed={joinMode === "solo"} disabled={status === "connecting"} onClick={() => setJoinMode("solo")}>혼자 하기</button>
+              <button type="button" aria-pressed={joinMode === "friends"} disabled={status === "connecting"} onClick={() => setJoinMode("friends")}>친구랑 하기</button>
               <button type="button" aria-pressed={joinMode === "public"} disabled={status === "connecting"} onClick={() => setJoinMode("public")}>공개방 찾기</button>
             </div>}
             <label className="field-label" htmlFor="display-name">별명</label>
@@ -594,7 +596,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
               value={displayName}
               onChange={(event) => setDisplayName(event.target.value)}
               maxLength={12}
-              placeholder="예: 눈치빠른콩"
+              placeholder="예: 숨은콩"
               autoComplete="nickname"
             />
 
@@ -602,32 +604,32 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
               <div className="invite-found">
                 <div><span>초대장 도착</span><strong>{inviteRoomId}</strong></div>
                 <button className="primary-button wide" type="button" disabled={status === "connecting"} onClick={() => void connect("invite", inviteRoomId)}>
-                  초대받은 방 입장
+                  친구 방에 들어가기
                 </button>
                 <button type="button" className="secondary-button" disabled={status === "connecting"} onClick={() => {
                   setInviteRoomId(""); setInviteCodeInput(""); window.history.replaceState({}, "", "/game");
-                }}>다른 게임 시작</button>
+                }}>다른 방법으로 시작하기</button>
               </div>
             ) : (
               <div className="mode-grid unified-modes" aria-label="게임 방식 선택">
                 {joinMode === "solo" && <section className="solo-start-card" aria-label="혼자 바로 시작">
-                  <div><strong>AI 3명과 먼저 한 판.</strong><small>인원을 기다리지 않고 시작해요. 처음이라면 쉬움으로 조작을 익혀보세요.</small></div>
+                  <div><strong>AI 친구 3명과 시작해요</strong><small>처음이라면 쉬움으로 가볍게 해보세요.</small></div>
                   <label htmlFor="solo-difficulty">AI 난이도</label>
                   <select id="solo-difficulty" value={soloDifficulty} onChange={(event) => setSoloDifficulty(event.target.value as AiDifficulty)} disabled={status === "connecting"}>
                     <option value="easy">쉬움</option><option value="normal">보통</option><option value="hard">어려움</option>
                   </select>
                   <button className="primary-button" type="button" disabled={status === "connecting"} onClick={() => void connect("invite", undefined, soloDifficulty)}>{status === "connecting" ? "게임에 연결하는 중…" : "AI와 바로 시작"}</button>
                 </section>}
-                {joinMode === "public" && <section className="public-start-card" aria-label="공개방 찾기"><strong>새로운 사람들과 모여요.</strong><p>빈자리가 있는 공개 대기실에 합류합니다. 방이 없으면 새 대기실이 열리고, 방장이 AI를 추가할 수 있어요.</p><button className="primary-button wide" type="button" disabled={status === "connecting"} onClick={() => void connect("public")}>{status === "connecting" ? "대기실 찾는 중…" : "공개 대기실 찾기"}</button><small>바로 한 판 시작하고 싶다면 ‘혼자 플레이’를 선택하세요.</small></section>}
+                {joinMode === "public" && <section className="public-start-card" aria-label="공개방 찾기"><strong>함께할 방을 찾아봐요</strong><p>빈자리가 있는 방으로 들어가요. 열린 방이 없으면 새 방을 만들어요. 사람이 부족하면 방장이 AI를 불러올 수 있어요.</p><button className="primary-button wide" type="button" disabled={status === "connecting"} onClick={() => void connect("public")}>{status === "connecting" ? "대기실 찾는 중…" : "공개 대기실 찾기"}</button><small>바로 한 판 시작하고 싶다면 ‘혼자 하기’를 선택하세요.</small></section>}
                 {joinMode === "friends" && <section className="create-room-card" aria-labelledby="create-room-title">
                   <div className="create-room-heading">
                     <span aria-hidden="true">◎</span>
-                    <div><strong id="create-room-title">우리끼리 숨바꼭질.</strong><small>방을 만들면 친구에게 보낼 초대 링크가 생겨요.</small></div>
+                    <div><strong id="create-room-title">친구들을 초대해요</strong><small>방을 만들고 초대 링크를 보내 주세요.</small></div>
                   </div>
                   <button className="create-room-button" type="button" disabled={status === "connecting"} onClick={() => void connect("invite")}>
-                    {status === "connecting" ? "대기실에 연결하는 중…" : "새 초대방 만들기"}
+                    {status === "connecting" ? "대기실에 연결하는 중…" : "친구 방 만들기"}
                   </button>
-                  <p className="create-room-note">4~10명으로 시작해요. 부족한 인원은 대기실에서 AI로 채울 수 있어요.</p>
+                  <p className="create-room-note">4명부터 시작할 수 있어요. 사람이 모자라면 AI 친구를 불러오세요.</p>
                 </section>}
               </div>
             )}
@@ -735,7 +737,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
                 <span>{snapshot.round || 1}R</span><strong>{snapshot.map.name || "밤의 문구점"}</strong>
               </div>
             )}
-            {status === "reconnecting" && <div className="game-overlay reconnect-overlay"><strong>다시 연결하는 중…</strong><span>10초 동안 참가 상태를 유지합니다.</span></div>}
+            {status === "reconnecting" && <div className="game-overlay reconnect-overlay"><strong>다시 연결하는 중…</strong><span>10초 동안 기다릴게요. 연결되면 바로 돌아와요.</span></div>}
             {snapshot?.phase === "COUNTDOWN" && <RoleRevealOverlay snapshot={snapshot} serverNow={serverNow} />}
             {snapshot?.seekerPreview && (
               <div className="preview-ribbon">
@@ -779,11 +781,11 @@ function LobbyControls({ snapshot, send }: { snapshot: GameSnapshot; send: (type
   const activePlayerCount = snapshot.players.filter((player) => player.bot || player.connected).length;
   return (
     <div className="lobby-controls">
-      <p>{activePlayerCount < snapshot.minPlayers ? `게임 시작까지 ${snapshot.minPlayers - activePlayerCount}명 더 필요합니다.` : "모두 준비하면 방장이 게임을 시작할 수 있습니다."}</p>
+      <p>{activePlayerCount < snapshot.minPlayers ? `게임 시작까지 ${snapshot.minPlayers - activePlayerCount}명 더 필요해요.` : "모두 준비되면 방장이 게임을 시작해요."}</p>
       {isHost ? (
         <div className="bot-manager" aria-label="AI 참가자 관리">
           <strong>AI 참가자 추가</strong>
-          <small>난이도를 골라 한 명씩 추가하세요. 사람과 AI를 합해 최대 10명입니다.</small>
+          <small>난이도를 골라 한 명씩 불러 보세요. 사람과 AI를 합해 10명까지 함께해요.</small>
           <div>
             {(["easy", "normal", "hard"] as const).map((difficulty) => (
               <button
@@ -861,7 +863,7 @@ function RoleCard({ snapshot }: { snapshot?: GameSnapshot }) {
   return (
     <div className={`role-card role-${role.toLowerCase()}`}>
       <span aria-hidden="true">{role === "HIDER" ? "▣" : role === "SEEKER" ? "☾" : "⌛"}</span>
-      <div><small>내 역할 · 현재 목표</small><strong>{role === "HIDER" ? "숨는 팀 · 틈새정령" : role === "SEEKER" ? "술래 · 밤지기" : "역할 배정 대기"}</strong></div>
+      <div><small>내 역할과 할 일</small><strong>{role === "HIDER" ? "숨는 팀 · 틈새정령" : role === "SEEKER" ? "술래 · 밤지기" : "역할을 기다리는 중"}</strong></div>
       <p>{roleInstruction(snapshot)}</p>
       {role === "SEEKER" && <em>이동 우위 · 숨는 팀보다 약 46% 빠름</em>}
       {role === "HIDER" && <em>{snapshot?.self.locked ? "◆ 위치 고정 중 · 이동키 작동 안 함" : "이동하면 짧은 파문이 남아요"}</em>}
@@ -871,16 +873,16 @@ function RoleCard({ snapshot }: { snapshot?: GameSnapshot }) {
 
 function RoleStatusCard({ snapshot }: { snapshot?: GameSnapshot }) {
   if (!snapshot || snapshot.self.role === "SPECTATOR") {
-    return <div className="state-card waiting"><span>현재 상태</span><strong>역할 배정 대기</strong><p>준비 완료 후 역할표에서 목표를 확인하세요.</p></div>;
+    return <div className="state-card waiting"><span>현재 상태</span><strong>역할을 기다리는 중</strong><p>게임이 시작되면 내 역할을 알려드려요.</p></div>;
   }
   if (snapshot.self.role === "HIDER") {
     const caught = snapshot.self.caught;
     const locked = snapshot.self.locked;
     return (
       <div className={`state-card hider-state ${caught ? "caught" : locked ? "locked" : "mobile"}`}>
-        <span>현재 은신 상태</span>
-        <strong>{caught ? "발견됨 · 팀 지원" : locked ? "위치 고정 · 이동 불가" : "이동 가능 · 파문 주의"}</strong>
-        <p>{caught ? "팀 신호로 남은 동료를 도와주세요." : locked ? "다시 움직이려면 먼저 고정 해제를 누르세요." : "움직이는 동안 짧은 파문이 남습니다."}</p>
+        <span>지금 내 상태</span>
+        <strong>{caught ? "들켰어요 · 친구 응원하기" : locked ? "가만히 숨는 중" : "움직일 수 있어요"}</strong>
+        <p>{caught ? "팀 신호로 남은 동료를 도와주세요." : locked ? "다시 움직이려면 먼저 고정 해제를 누르세요." : "움직이면 동그란 흔적이 잠깐 보여요."}</p>
       </div>
     );
   }
@@ -888,42 +890,42 @@ function RoleStatusCard({ snapshot }: { snapshot?: GameSnapshot }) {
     <div className="focus-card">
       <div><span>확인 집중력</span><strong>{snapshot.self.focus}</strong></div>
       <progress max={100} value={snapshot.self.focus}>{snapshot.self.focus}</progress>
-      <p>오답이면 집중력이 줄고 잠시 확인할 수 없습니다.</p>
+      <p>틀리면 집중력이 줄고 잠시 쉬어야 해요.</p>
     </div>
   );
 }
 
 function ActionButtons({ snapshot, send }: { snapshot?: GameSnapshot; send: (type: string, payload: unknown) => void }) {
   if (!snapshot || snapshot.self.role === "SPECTATOR") return <div className="action-empty">경기가 시작되면 역할 행동이 열려요.</div>;
-  if (snapshot.phase === "COUNTDOWN") return <div className="action-empty">역할 목표를 확인하세요. 숨기·기준 배치 확인이 시작되면 행동이 열립니다.</div>;
-  if (snapshot.phase === "RESULT" || snapshot.phase === "FINAL") return <div className="action-empty">라운드가 끝났습니다. 점수와 주요 장면을 확인하세요.</div>;
-  if (snapshot.self.caught) return <div className="action-empty">발견됐지만 끝이 아니에요. 아래 팀 신호로 동료를 도와주세요.</div>;
+  if (snapshot.phase === "COUNTDOWN") return <div className="action-empty">내 역할을 확인해 주세요. 곧 움직일 수 있어요.</div>;
+  if (snapshot.phase === "RESULT" || snapshot.phase === "FINAL") return <div className="action-empty">이번 라운드가 끝났어요. 점수를 확인해 볼까요?</div>;
+  if (snapshot.self.caught) return <div className="action-empty">들켰네요! 팀 신호로 아직 숨은 친구들을 도와주세요.</div>;
   if (snapshot.self.role === "HIDER") {
     return (
       <div className="action-buttons">
         <div className="action-item">
           <button type="button" aria-pressed={snapshot.self.locked} onClick={() => send("lock", !snapshot.self.locked)}><span>◆</span><strong>{snapshot.self.locked ? "고정 해제" : "위치 고정"}</strong><small>{snapshot.self.locked ? "해제해야 다시 움직일 수 있어요" : "이동키를 눌러도 움직이지 않아요"}</small></button>
-          <HelpTooltip label="위치 고정" copy="현재 위치에서 완전히 멈춰 움직임 파문을 숨깁니다. 고정 중에는 이동키가 작동하지 않으며, 다시 움직이려면 반드시 고정 해제를 누르세요. 미션 구역에서는 2초 동안 고정하면 됩니다." />
+          <HelpTooltip label="위치 고정" copy="움직임을 멈춰 눈에 덜 띄게 숨어요. 다시 움직이려면 ‘고정 해제’를 눌러 주세요. 수색 시간에는 미션 구역에서 2초 동안 고정하면 점수를 얻어요." />
         </div>
         <div className="action-item">
           <button type="button" disabled={!snapshot.self.swapAvailable} onClick={() => send("swap", true)}><span>⇄</span><strong>{snapshot.self.swapAvailable ? "무작위 자리바꿈" : "자리바꿈 사용 완료"}</strong><small>{snapshot.self.swapAvailable ? "맵 전체 같은 사물 중 한 곳 · 1회" : "다음 라운드에 다시 사용할 수 있어요"}</small></button>
-          <HelpTooltip label="무작위 자리바꿈" copy="거리와 관계없이 맵 전체의 같은 종류 사물 중 한 곳과 무작위로 자리를 바꿉니다. 라운드당 한 번만 사용할 수 있으니 발각 직전이나 기준 기억을 흔들 때 사용하세요." />
+          <HelpTooltip label="무작위 자리바꿈" copy="가게 안의 같은 종류 물건 중 하나와 무작위로 자리를 바꿔요. 라운드마다 한 번만 쓸 수 있어요. 들킬 것 같을 때 사용해 보세요." />
         </div>
         {snapshot.self.taunt && <div className="action-item taunt-action">
           <button type="button" disabled={snapshot.phase !== "SEEKING" || !canTaunt(snapshot.self.taunt, snapshot.serverTime, snapshot.phaseEndsAt)} onClick={() => send("taunt", true)}>
             <span aria-hidden="true">!</span><strong>{snapshot.self.taunt.resolvesAt > snapshot.serverTime ? `${Math.ceil((snapshot.self.taunt.resolvesAt - snapshot.serverTime) / 1_000)}초 더 버티기!` : "여기 있었지!"}</strong>
             <small>{snapshot.phase !== "SEEKING" ? "수색이 시작되면 도발할 수 있어요" : snapshot.self.taunt.remaining === 0 ? "이번 라운드 도발 사용 완료" : snapshot.self.taunt.readyAt > snapshot.serverTime ? `${Math.ceil((snapshot.self.taunt.readyAt - snapshot.serverTime) / 1_000)}초 후 · ${snapshot.self.taunt.remaining}번 남음` : `위치 공개 후 6초 생존 +${TAUNT_RULES.reward}점 · ${snapshot.self.taunt.remaining}번`}</small>
           </button>
-          <HelpTooltip label="도발" copy="현재 위치를 술래와 AI에게 한 번 알립니다. 이후 6초 동안 연결을 유지하며 잡히지 않으면 20점! 도발 뒤 이동·자리바꿈이 가능하며 라운드당 2번, 20초 간격입니다. 잡히거나 연결이 끊기면 보상이 없습니다." />
+          <HelpTooltip label="도발" copy="‘나 여기 있어!’ 하고 위치를 알려요. 그 뒤 6초 동안 잡히지 않으면 20점! 도망가거나 자리를 바꿔도 돼요. 20초 간격으로, 라운드마다 2번 쓸 수 있어요. 잡히거나 연결이 끊기면 점수를 받지 못해요." />
         </div>}
-        {snapshot.mission && <div className="mission-card action-with-help"><span>{snapshot.phase === "HIDING" ? "수색 시작 후 진열 미션" : "진열 미션"}</span><strong>{snapshot.mission.label}</strong><progress max={1} value={snapshot.mission.progress}>{Math.round(snapshot.mission.progress * 100)}%</progress><HelpTooltip label="진열 미션" copy="수색 중 표시된 구역 안에서 위치 고정을 2초 유지하면 25점을 받습니다. 숨기 시간에는 진행되지 않습니다. 생존보다 위험하다고 판단되면 포기해도 됩니다." /></div>}
+        {snapshot.mission && <div className="mission-card action-with-help"><span>{snapshot.phase === "HIDING" ? "수색 시작 후 진열 미션" : "진열 미션"}</span><strong>{snapshot.mission.label}</strong><progress max={1} value={snapshot.mission.progress}>{Math.round(snapshot.mission.progress * 100)}%</progress><HelpTooltip label="진열 미션" copy="수색이 시작되면 표시된 곳에서 ‘위치 고정’을 누르고 2초 동안 기다려요. 25점을 받을 수 있어요. 술래가 가까이 있다면 무리하지 않아도 돼요." /></div>}
       </div>
     );
   }
   if (snapshot.seekerPreview) {
     return (
       <div className="action-empty preview-actions">
-        <strong>기준 배치 확인 시간</strong><br />전체 맵에서 마우스를 끌어 이동하고 휠로 확대하세요. WASD·방향키로 포탈 도착점도 직접 확인할 수 있어요.
+        <strong>가게 모습을 기억해요</strong><br />마우스로 화면을 끌거나 휠로 확대해 보세요. 방향키로 움직여 포탈 반대편도 둘러볼 수 있어요.
       </div>
     );
   }
@@ -933,11 +935,11 @@ function ActionButtons({ snapshot, send }: { snapshot?: GameSnapshot; send: (typ
     <div className="action-buttons">
       <div className="action-item">
         <button type="button" disabled={lensSeconds > 0} onClick={() => send("lens", true)}><span>⌾</span><strong>관찰 렌즈</strong><small>{lensSeconds > 0 ? `${lensSeconds}초 뒤 충전` : "최근 움직임을 구역으로 표시"}</small></button>
-        <HelpTooltip label="관찰 렌즈" copy="최근 2초 안에 틈새정령이 움직인 넓은 구역만 1.8초간 표시합니다. 정확한 사물은 알려주지 않으며 재사용 대기는 30초입니다." />
+        <HelpTooltip label="관찰 렌즈" copy="숨는 친구들이 최근 2초 동안 움직인 구역을 1.8초간 보여줘요. 어떤 물건인지는 직접 찾아야 해요. 한 번 쓰면 30초 뒤에 다시 쓸 수 있어요." />
       </div>
       <div className="action-item tag-action">
         <div className={tagSeconds > 0 ? "tag-tip cooling" : "tag-tip"}><span aria-hidden="true">☝</span><p><strong>확인 스티커</strong><br />{tagSeconds > 0 ? `${tagSeconds.toFixed(1)}초 뒤 다시 확인` : "가까운 사물을 직접 클릭하세요."}</p></div>
-        <HelpTooltip label="확인 스티커" copy="2.6칸 안에서 선반에 가리지 않은 사물만 확인할 수 있습니다. 오답은 집중력 25와 3초 대기, 집중력 소진은 6.5초 대기가 적용됩니다." />
+        <HelpTooltip label="확인 스티커" copy="2.6칸 안에 있고 선반에 가리지 않은 물건을 확인할 수 있어요. 틀리면 집중력이 25 줄고 3초를 기다려야 해요. 집중력을 모두 쓰면 6.5초 뒤에 다시 확인할 수 있어요." />
       </div>
     </div>
   );
@@ -950,7 +952,7 @@ function TeamPings({ role, send }: { role?: GameSnapshot["self"]["role"]; send: 
     : [["danger", "술래 조심"], ["moving", "이동할게요"], ["done", "미션 완료"]];
   return (
     <div className="ping-panel">
-      <div className="ping-heading"><span>팀 신호</span><HelpTooltip label="팀 신호" copy="내 현재 위치에 같은 역할만 볼 수 있는 표시를 남깁니다. 음성 대화 없이 의심 구역과 위험을 빠르게 공유하세요." /></div>
+      <div className="ping-heading"><span>팀 신호</span><HelpTooltip label="팀 신호" copy="내가 있는 곳에 같은 팀만 볼 수 있는 표시를 남겨요. 수상한 곳이나 술래가 온 방향을 알려 주세요." /></div>
       <div>{choices.map(([kind, label]) => <button key={kind} type="button" onClick={() => send("ping", { kind })}>{label}</button>)}</div>
     </div>
   );
@@ -970,15 +972,15 @@ function RoleRevealOverlay({ snapshot, serverNow }: { snapshot: GameSnapshot; se
   const teamName = seeker ? "술래" : "숨는 팀";
   const roleName = seeker ? "밤지기" : "틈새정령";
   const steps = seeker
-    ? ["숨는 장면 대신 기준 배치를 기억하세요.", "드래그·휠과 이동키로 포탈 도착점까지 확인하세요.", "수색이 열리면 가까운 수상한 사물을 클릭하세요."]
-    : ["주변과 자연스럽게 어울리는 자리를 찾으세요.", "자리를 정하면 ‘위치 고정’을 눌러 완전히 멈추세요.", "무작위 자리바꿈과 포탈은 발각 직전 탈출에 활용하세요."];
+    ? ["먼저 가게가 어떤 모습인지 기억해요.", "방향키로 움직이고, 포탈 반대편도 둘러봐요.", "수색이 시작되면 수상한 물건에 다가가 눌러요."]
+    : ["다른 물건 옆에 자연스럽게 숨어요.", "자리를 잡으면 ‘위치 고정’을 눌러요.", "들킬 것 같으면 자리바꿈이나 포탈로 빠져나와요."];
   return (
     <div className={`game-overlay role-reveal-overlay ${seeker ? "reveal-seeker" : "reveal-hider"}`} role="dialog" aria-label={`${teamName} ${roleName} 역할 안내`}>
       <span className="role-reveal-symbol" aria-hidden="true">{seeker ? "☾" : "▣"}</span>
-      <p className="role-reveal-kicker">{snapshot.round}라운드 역할 확정</p>
-      <strong>당신은 이번 라운드 <em>{teamName}</em>입니다</strong>
-      <p className="role-reveal-alias">눈숨 역할 이름 · {roleName}</p>
-      <p className="role-reveal-goal">{seeker ? "제한시간 안에 모든 틈새정령을 찾아내세요." : "평범한 사물처럼 숨어 수색 종료까지 살아남으세요."}</p>
+      <p className="role-reveal-kicker">{snapshot.round}라운드, 내 역할은?</p>
+      <strong>이번에는 <em>{teamName}</em>{seeker ? "예요" : "이에요"}</strong>
+      <p className="role-reveal-alias">내 캐릭터 · {roleName}</p>
+      <p className="role-reveal-goal">{seeker ? "시간 안에 숨어 있는 친구들을 모두 찾아봐요." : "물건인 척, 시간이 끝날 때까지 들키지 말아요."}</p>
       <ol>{steps.map((step) => <li key={step}>{step}</li>)}</ol>
       <div className="role-reveal-footer"><time>{formatRemaining(snapshot, serverNow)}</time><span>{formatDurationLabel(snapshot.roundDurationMs)} 라운드 · 곧 {seeker ? "기준 배치 확인" : "숨기"} 시작</span></div>
     </div>
@@ -990,28 +992,28 @@ function StageHelpCoach({ snapshot, onClose }: { snapshot: GameSnapshot; onClose
   const guide = ({
     LOBBY: {
       eyebrow: "처음 플레이 안내",
-      title: "대기실에서 이렇게 준비하세요",
-      steps: ["방장은 AI와 참가 인원을 정하고, 각자 준비 완료를 누릅니다.", "모두 준비되면 방장이 게임 시작을 누릅니다.", "역할 안내에서 숨는 팀인지 술래인지 확인합니다."],
+      title: "친구들과 준비해요",
+      steps: ["친구들이 모이면 ‘준비 완료’를 눌러 주세요.", "사람이 모자라면 방장이 AI를 불러올 수 있어요.", "모두 준비되면 방장이 게임을 시작해요."],
     },
     HIDER_HIDE: {
       eyebrow: "숨는 팀 · 1단계",
-      title: "먼저 자연스러운 자리를 찾으세요",
-      steps: ["진열된 같은 종류 사물 무리 옆으로 이동합니다.", "자리를 정하면 위치 고정을 눌러 완전히 멈춥니다.", "미션 구역을 미리 찾아두세요. 수색이 시작된 뒤 2초간 고정하면 미션 점수를 받습니다."],
+      title: "어디에 숨을까요?",
+      steps: ["같은 종류의 물건이 모인 곳으로 가보세요.", "자리를 잡으면 ‘위치 고정’을 눌러요.", "미션은 수색이 시작된 뒤 할 수 있어요. 지금은 숨을 곳부터 찾아요."],
     },
     HIDER_SURVIVE: {
       eyebrow: "숨는 팀 · 2단계",
-      title: "고정을 유지하고 탈출 시점을 고르세요",
-      steps: ["고정 중에는 이동키가 작동하지 않으므로 움직이기 전에 고정을 해제합니다.", "발각 직전에는 무작위 자리바꿈을, 위험을 감수하고 점수를 노릴 때는 ‘여기 있었지!’ 도발을 사용합니다.", "발견된 뒤에도 팀 신호로 남은 동료를 도울 수 있습니다."],
+      title: "들키지 않게 숨어요",
+      steps: ["다시 움직이려면 ‘고정 해제’를 눌러 주세요.", "들킬 것 같으면 다른 물건과 자리를 바꿔요.", "더 도전하고 싶다면 ‘여기 있었지!’를 눌러 보세요. 위치를 알리고 6초 버티면 20점이에요."],
     },
     SEEKER_PREVIEW: {
       eyebrow: "술래 · 1단계",
-      title: "먼저 기준 배치를 살펴보세요",
-      steps: ["숨는 팀은 보이지 않으니 기준 사물 수와 빈 공간을 확인합니다.", "마우스로 맵을 끌고 휠로 확대합니다.", "WASD로 포탈을 통과해 연결 구역과 도착점을 확인합니다."],
+      title: "처음 가게 모습을 기억해요",
+      steps: ["아직 숨는 친구들은 보이지 않아요. 물건과 빈자리를 기억해요.", "마우스로 화면을 끌거나 휠로 확대할 수 있어요.", "방향키로 포탈에 들어가 반대편도 둘러보세요."],
     },
     SEEKER_SEARCH: {
       eyebrow: "술래 · 2단계",
-      title: "이제 기준 배치와 다른 점을 찾으세요",
-      steps: ["기억한 배치와 다른 사물을 찾습니다.", "2.6칸 안까지 다가간 뒤 수상한 사물을 클릭합니다.", "막히면 관찰 렌즈로 최근 움직임 구역을 좁힙니다."],
+      title: "아까와 달라진 곳을 찾아요",
+      steps: ["아까와 달라진 물건이나 움직이는 흔적을 찾아요.", "수상한 물건에 가까이 다가가 눌러 보세요.", "어디부터 볼지 모르겠다면 ‘관찰 렌즈’를 써보세요."],
     },
   } satisfies Record<GuideStage, { eyebrow: string; title: string; steps: string[] }>)[stage];
   const tone = stage.startsWith("SEEKER") ? "coach-seeker" : stage.startsWith("HIDER") ? "coach-hider" : "coach-lobby";
@@ -1053,14 +1055,14 @@ function ResultOverlay({ snapshot, send, connected, onCopyResult }: { snapshot: 
       <span>{snapshot.result?.winner === "HIDERS" ? "▣ 끝까지 자연스러웠어요" : "☾ 관찰이 정확했어요"}</span>
       <strong>{snapshot.phase === "FINAL" ? `${snapshot.totalRounds}라운드 완주! 다음 눈치왕은?` : snapshot.result?.headline}</strong>
       {snapshot.phase === "FINAL" && <p className="result-my-score">내 기록 <b>{self?.score ?? 0}점</b> · 공동 순위 포함 {rank}위 / {ranking.length}명</p>}
-      <ol>{snapshot.replay.slice(-3).map((beat) => <li key={beat.id}>{beat.label}</li>)}</ol>
+      {snapshot.replay.length > 0 && <ol>{snapshot.replay.slice(-3).map((beat) => <li key={beat.id}>{beat.label}</li>)}</ol>}
       {snapshot.phase === "FINAL" && <div className="result-actions">
         <button className="primary-button" type="button" disabled={!connected || Boolean(self?.host && !othersReady)} onClick={() => {
           if (self?.host) { send("ready", true); send("start", true); }
           else send("ready", !self?.ready);
         }}>{self?.host ? othersReady ? "같은 방에서 한 판 더" : "친구의 재경기 준비를 기다려요" : self?.ready ? "재경기 준비 취소" : "한 판 더! 준비 완료"}</button>
         <button className="secondary-button" type="button" onClick={onCopyResult}>내 결과·초대 링크 복사</button>
-        <small>{self?.host ? "지금 인원과 AI 난이도로 다시 시작합니다." : self?.ready ? "준비했어요. 모두 준비되면 방장이 시작합니다." : "준비하면 같은 친구들과 다시 만나요."}</small>
+        <small>{self?.host ? "지금 친구들과 같은 AI 난이도로 다시 시작해요." : self?.ready ? "준비됐어요! 모두 준비되면 방장이 시작해요." : "준비하면 같은 친구들과 다시 만나요."}</small>
       </div>}
     </div>
   );
@@ -1135,20 +1137,22 @@ function phaseLabel(phase?: GamePhase): string {
 }
 
 function roleInstruction(snapshot?: GameSnapshot): string {
-  if (!snapshot || snapshot.self.role === "SPECTATOR") return "준비를 마친 뒤 역할 안내를 기다리세요.";
+  if (!snapshot || snapshot.self.role === "SPECTATOR") return "준비가 되면 ‘준비 완료’를 눌러 주세요.";
   if (snapshot.phase === "COUNTDOWN") return snapshot.self.role === "SEEKER"
-    ? "이번 라운드 술래입니다. 숨는 장면은 보이지 않으니 기준 배치부터 살펴보세요."
-    : "이번 라운드 숨는 팀입니다. 자연스러운 자리를 찾고 위치를 고정하세요.";
-  if (snapshot.self.caught) return "발견됐지만 끝이 아니에요. 팀 신호로 동료를 도와주세요.";
-  if (snapshot.self.role === "HIDER") return snapshot.phase === "HIDING" ? "사물 무리 사이에 자리를 잡고 위치 고정을 누르세요." : snapshot.self.locked ? "위치 고정을 유지하고, 움직이려면 먼저 고정을 해제하세요." : "이동하면 파문이 남습니다. 자리를 정했으면 다시 위치를 고정하세요.";
+    ? "이번에는 술래예요. 먼저 가게 모습을 살펴봐요."
+    : "이번에는 숨는 팀이에요. 다른 물건 옆에 쏙 숨어봐요.";
+  if (snapshot.self.caught) return "들켰네요! 팀 신호로 아직 숨은 친구들을 도와주세요.";
+  if (snapshot.self.role === "HIDER") return snapshot.phase === "HIDING" ? "다른 물건 옆에 숨고 ‘위치 고정’을 눌러 주세요." : snapshot.self.locked ? "가만히 숨어 있어요. 움직이려면 ‘고정 해제’를 눌러 주세요." : "움직이면 흔적이 보여요. 숨을 곳을 찾으면 위치를 고정해 주세요.";
   return snapshot.phase === "HIDING"
-    ? "숨는 팀은 보이지 않습니다. 기준 사물과 포탈을 직접 둘러보세요."
-    : "기억한 기준 배치와 비교하고, 가까이 다가가 수상한 사물을 클릭하세요.";
+    ? "아직 숨는 친구들은 보이지 않아요. 가게와 포탈을 둘러봐요."
+    : "아까와 다른 물건이 있나요? 가까이 다가가 눌러 보세요.";
 }
 
 function controlInstruction(snapshot?: GameSnapshot): string {
-  if (!snapshot || snapshot.self.role === "SPECTATOR") return "이동: WASD / 방향키 · 역할 배정 뒤 전용 행동이 열립니다.";
-  if (snapshot.self.caught) return "발견된 뒤에는 이동할 수 없지만 팀 신호를 보낼 수 있습니다.";
+  if (snapshot?.phase === "FINAL") return "내 기록을 보고, 준비되면 한 판 더 시작해요.";
+  if (snapshot?.phase === "RESULT") return "이번 라운드가 끝났어요. 곧 다음 역할을 알려드릴게요.";
+  if (!snapshot || snapshot.self.role === "SPECTATOR") return "게임이 시작되면 방향키나 화면 이동키로 움직여요.";
+  if (snapshot.self.caught) return "이제 움직일 수는 없지만, 팀 신호로 친구들을 도울 수 있어요.";
   if (snapshot.self.role === "HIDER") return snapshot.self.locked
     ? "위치 고정 중 · 다시 움직이려면 먼저 고정 해제를 누르세요."
     : "이동: WASD / 방향키 · 자리를 정한 뒤 위치 고정을 누르세요.";
@@ -1176,9 +1180,9 @@ function modeLabel(mode?: RoomMode): string {
 
 function aiDifficultyDescription(difficulty: AiDifficulty): string {
   return ({
-    easy: "반응이 느리고 움직임 단서를 자주 놓쳐 처음 연습하기 좋습니다.",
-    normal: "찾기와 숨기 판단, 실수 확률을 균형 있게 조정한 기본 난이도입니다.",
-    hard: "단서를 오래 기억하고 적극적으로 추적하거나 도망칩니다. 벽 너머 정답은 알지 못합니다.",
+    easy: "AI가 천천히 반응해서 처음 연습하기 좋아요.",
+    normal: "숨고 찾기를 골고루 즐기기 좋은 난이도예요.",
+    hard: "AI가 흔적을 빨리 알아채고 오래 기억해요. 그래도 벽 너머를 볼 수는 없어요.",
   } satisfies Record<AiDifficulty, string>)[difficulty];
 }
 
@@ -1219,14 +1223,14 @@ function shortRoomId(roomId: string): string {
 
 function readableError(error: unknown): string {
   if (error instanceof Error) {
-    if (/room.*(not found|does not exist)|not found.*room|4212/i.test(error.message)) return "초대 코드에 해당하는 방을 찾지 못했습니다. 코드를 다시 확인해 주세요.";
-    if (/room.*full|방이 가득|4214/i.test(error.message)) return "방이 가득 찼습니다. 다른 방을 이용하거나 방장에게 AI 참가자를 줄여 달라고 알려주세요.";
-    if (/4215|방장이 재연결/i.test(error.message)) return "방장이 다시 연결하는 중입니다. 잠시 뒤 빠른 매칭을 다시 시도해 주세요.";
-    if (/seat reservation expired|reservation.*expired/i.test(error.message)) return "입장 시간이 지났거나 방이 닫혔습니다. 초대 코드를 다시 확인해 주세요.";
-    if (/fetch|network|connection|socket/i.test(error.message)) return "게임 서버가 실행 중인지 확인해 주세요.";
-    return error.message;
+    if (/room.*(not found|does not exist)|not found.*room|4212/i.test(error.message)) return "초대받은 방을 찾지 못했어요. 코드를 다시 확인해 주세요.";
+    if (/room.*full|방이 가득|4214/i.test(error.message)) return "방이 가득 찼어요. 다른 방으로 들어가거나 방장에게 AI를 줄여 달라고 해주세요.";
+    if (/4215|방장이.*(재연결|다시 연결)/i.test(error.message)) return "방장이 다시 연결하는 중이에요. 조금 뒤에 다시 들어와 주세요.";
+    if (/4213|이미 시작한|진행 중인 경기/i.test(error.message)) return "이미 시작한 게임이에요. 다음 판에 함께해 주세요.";
+    if (/seat reservation expired|reservation.*expired/i.test(error.message)) return "입장 시간이 지났거나 방이 닫혔어요. 초대 코드를 다시 확인해 주세요.";
+    if (/fetch|network|connection|socket/i.test(error.message)) return "게임에 연결하지 못했어요. 인터넷 연결을 확인하고 다시 들어와 주세요.";
   }
-  return "잠시 후 다시 시도해 주세요.";
+  return "게임에 연결하지 못했어요. 잠시 뒤 다시 시도해 주세요.";
 }
 
 /** 마지막 자리가 동시에 예약된 경우 공개 대기실 검색을 한 번만 새로 시도한다. */
