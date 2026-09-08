@@ -19,7 +19,7 @@ import type {
 import { aiDifficultyLabel } from "../../shared/ai-rules";
 import { canTaunt, TAUNT_RULES } from "../../shared/party-rules";
 import { GameAudio } from "./game-audio";
-import { leaveGameRoom } from "./room-lifecycle";
+import { leaveGameRoom, reconnectStalledRoom } from "./room-lifecycle";
 import { MOVE_HEARTBEAT_INTERVAL_MS } from "../../shared/input-rules";
 import { actionForShortcut } from "../../shared/action-shortcuts";
 import { JoystickSendLimiter } from "../../shared/joystick-input";
@@ -210,6 +210,14 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
     const interval = window.setInterval(() => setClockNow(Date.now()), 200);
     return () => window.clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (!room) return;
+    const interval = window.setInterval(() => {
+      if (roomRef.current === room) reconnectStalledRoom(room, snapshotReceivedAtRef.current, Date.now());
+    }, 500);
+    return () => window.clearInterval(interval);
+  }, [room]);
 
   useEffect(() => {
     if (!room || !canvasRef.current) return;
@@ -419,6 +427,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       });
       joinedRoom.onReconnect(() => {
         if (roomRef.current !== joinedRoom) { leaveGameRoom(joinedRoom); return; }
+        snapshotReceivedAtRef.current = Date.now();
         pressedKeysRef.current.clear();
         clearAnalogInput();
         rendererRef.current?.setLocalMovement({ x: 0, y: 0 }, null);
@@ -465,6 +474,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
       });
 
       roomRef.current = joinedRoom;
+      snapshotReceivedAtRef.current = Date.now();
       setRoom(joinedRoom);
       setStatus("connected");
       setNotice({ id: createClientId(), label: "대기실에 들어왔어요.", tone: "success" });
@@ -745,7 +755,7 @@ export default function GameClient({ initialPlay = "solo" }: { initialPlay?: "so
         <div className={finalChase ? "phase-summary urgent" : "phase-summary"} aria-live="polite">
           <span className={`phase-icon phase-${snapshot?.phase.toLowerCase() ?? "lobby"}`} aria-hidden="true" />
           <div><small>{finalChase ? "막판 위험 경보" : phaseKicker(snapshot?.phase)}</small><strong>{finalChase ? "마지막 추격" : phaseLabel(snapshot?.phase)}</strong></div>
-          <time>{formatRemaining(snapshot, serverNow)}</time>
+          <time>{status === "reconnecting" ? "--:--" : formatRemaining(snapshot, serverNow)}</time>
         </div>
         <div className="play-header-actions">
           <button type="button" onClick={() => setCoachOpen(true)} disabled={!snapshot}>

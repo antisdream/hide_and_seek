@@ -10,8 +10,8 @@ android {
         applicationId = "com.antisdream.nunsum"
         minSdk = 26
         targetSdk = 36
-        versionCode = 20
-        versionName = "0.020-test"
+        versionCode = 21
+        versionName = "0.020.1-test"
     }
 
     compileOptions {

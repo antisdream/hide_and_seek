@@ -1242,6 +1242,19 @@ button { color: inherit; }
   .play-objective-details { max-height: 58dvh; overflow-y: auto; }
   .coach-card { max-height: 90%; overflow-y: auto; }
   .play-workspace.is-playing .action-empty.preview-actions { min-height: 36px; padding-block: 5px; }
+
+  /* 낮은 가로 화면에서는 설명과 행동을 맵 위에 놓아 맵 높이를 온전히 쓴다. */
+  .play-workspace.is-playing .game-column { position: relative; display: block; padding: 4px; }
+  .play-workspace.is-playing .canvas-frame { height: 100%; min-height: 0; }
+  .play-workspace.is-playing .play-objective { position: absolute; top: 12px; right: 12px; z-index: 16; max-width: calc(100% - 180px); }
+  .play-workspace.is-playing .play-objective > summary { gap: 10px; background: #172239e8; }
+  .play-workspace.is-playing .play-objective-details { left: auto; width: min(600px, calc(100vw - 24px)); }
+  .play-workspace.is-playing .game-controls-bar { position: absolute; right: 12px; bottom: 12px; z-index: 16; width: min(540px, calc(100% - 180px)); }
+  .play-workspace.is-playing .action-item > button, .play-workspace.is-playing .tag-tip, .play-workspace.is-playing .mission-card { background: #172239e8; }
+  .play-workspace.is-playing .preview-actions { display: none; }
+  .play-workspace.is-playing .preview-ribbon { top: auto; bottom: 12px; right: 12px; max-width: calc(100% - 180px); }
+  .play-workspace.is-playing .game-column:has(.role-reveal-overlay, .result-overlay) > .play-objective,
+  .play-workspace.is-playing .game-column:has(.role-reveal-overlay, .result-overlay) > .game-controls-bar { visibility: hidden; }
 }
 
 /* 한 손가락으로 방향과 속도를 이어서 조절하는 아날로그 패드. */
